@@ -1,0 +1,6 @@
+; hello.anal — the simplest ANAL program.
+
+ANAL "hello" VERSION 1
+
+PUSH "Hello, World!"
+EXPEL

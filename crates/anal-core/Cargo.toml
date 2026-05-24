@@ -1,0 +1,14 @@
+[package]
+name = "anal-core"
+description = "Reference implementation core for the ANAL programming language."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+logos     = { workspace = true }
+ariadne   = { workspace = true }
+thiserror = { workspace = true }

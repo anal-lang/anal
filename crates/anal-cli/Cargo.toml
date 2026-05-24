@@ -1,0 +1,18 @@
+[package]
+name = "anal-cli"
+description = "Command-line interface for the ANAL programming language."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "anal"
+path = "src/main.rs"
+
+[dependencies]
+clap   = { workspace = true }
+anyhow = { workspace = true }
+# anal-core = { path = "../anal-core" }   # wired in once the CLI consumes the library
