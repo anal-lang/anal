@@ -87,7 +87,7 @@ irm https://github.com/1xn/anal/releases/latest/download/install.ps1 | iex
 
 Or grab a tarball directly from the [releases page](https://github.com/1xn/anal/releases/latest) and unpack the `anal` binary onto your `PATH`.
 
-Pin a specific version with `ANAL_VERSION=v0.1.0` (sh) or `$env:ANAL_VERSION='v0.1.0'` (PowerShell) before piping. Change the destination with `ANAL_INSTALL_DIR`.
+Pin a specific version with `ANAL_VERSION=v0.1.1` (sh) or `$env:ANAL_VERSION='v0.1.1'` (PowerShell) before piping. Change the destination with `ANAL_INSTALL_DIR`.
 
 ---
 
@@ -131,6 +131,17 @@ What is not in v0.1: a module system, a type system beyond the built-in scalars,
 
 ---
 
+## Milestones
+
+- **v0.1** ✓ shipped — reference interpreter, full spec coverage of the core ops, install pipeline.
+- **v0.2** — module system, real type errors, `EXPAND` / `HOLD` / `RESUME` lifted out of no-op status.
+- **v1.0** — `analc`, the self-hosted compiler. ANAL compiling ANAL into `.sph` bytecode.
+- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§9](docs/index.html#suppository); neither shipped.
+
+No timelines. ANAL does not rush.
+
+---
+
 ## Prior art
 
 Influenced by Forth (stack semantics), INTERCAL (institutional voice), and a misreading of a 2014 Hacker News comment.
@@ -164,13 +175,18 @@ That is the eventual goal — a self-hosted `analc` that emits `.sph` bytecode. 
 
 ## Contributing
 
-ANAL does not accept pull requests. This is not a bug. All changes flow in one direction. Patches are submitted by email; significant changes go through the RFC PASSAGE process. See the [contributing policy](docs/index.html#contributing) for details.
+ANAL does not accept pull requests. This is not a bug. All changes flow in one direction.
+
+- **Patches** are submitted by email.
+- **Significant changes** go through the **RFC PASSAGE** process. RFCs are PUSHed to the repository; the core team PROBEs them, deliberates, and either INSERTs them into the roadmap or EXTRACTs them with a written explanation. Acceptance requires CONSENT of a majority of core maintainers.
+
+The PASSAGE process typically takes 6–18 months. ANAL does not rush.
 
 ---
 
 ## Acknowledgements
 
-ANAL was engineered in collaboration with Claude (Anthropic). The model proposes patches; the maintainer `INSERT`s them. The maintainer reserves the right to `RELAX` and rewrite history. The model does not.
+ANAL was engineered in tight collaboration with Claude (Anthropic). The model proposes patches; the maintainer `INSERT`s them. The maintainer reserves the right to `RELAX` and rewrite history. The model does not.
 
 ---
 
