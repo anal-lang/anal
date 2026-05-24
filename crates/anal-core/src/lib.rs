@@ -8,10 +8,9 @@
 //!
 //! ```text
 //! source text
-//!     -> [`lexer`]    -> Vec<Spanned<Token>>
-//!     -> [`parser`]   -> [`ast::Program`]
-//!     -> [`compiler`] -> Vec<[`op::Instruction`]>
-//!     -> [`vm::VM`]   -> side effects + final stack state
+//!     -> [`lexer::lex`]    -> Vec<Spanned<Token>>
+//!     -> [`parser::compile`] -> Vec<[`op::Instr`]>
+//!     -> [`vm::VM::execute`] -> side effects + final stack state
 //! ```
 //!
 //! See <https://github.com/anal-lang/anal> for the language specification.
@@ -25,3 +24,10 @@ pub mod parser;
 pub mod token;
 pub mod value;
 pub mod vm;
+
+pub use error::AnalError;
+pub use op::{Instr, Op};
+pub use parser::compile;
+pub use token::Span;
+pub use value::Value;
+pub use vm::VM;

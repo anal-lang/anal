@@ -13,6 +13,6 @@ name = "anal"
 path = "src/main.rs"
 
 [dependencies]
-clap   = { workspace = true }
-anyhow = { workspace = true }
-# anal-core = { path = "../anal-core" }   # wired in once the CLI consumes the library
+anal-core = { path = "../anal-core" }
+clap      = { workspace = true }
+anyhow    = { workspace = true }
