@@ -1,0 +1,22 @@
+; countdown.anal — counts down from 5 to 1, printing each on its own line.
+;
+; The counter lives on the stack. Before entering DILATE we push the
+; loop condition (counter > 0) so DILATE has something to pop. Each
+; iteration we DUP-then-DISCHARGE so the printed value is consumed
+; without losing the counter, decrement, and re-push the condition.
+
+ANAL "countdown" VERSION 1
+
+PUSH 5
+
+DUP PUSH 0 GT
+
+DILATE
+  DUP
+  DISCHARGE
+  PUSH 1
+  SUB
+  DUP PUSH 0 GT
+CONSTRICT
+
+POP
