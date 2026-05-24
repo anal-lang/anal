@@ -13,7 +13,7 @@
 //!     -> [`vm::VM::execute`] -> side effects + final stack state
 //! ```
 //!
-//! See <https://github.com/anal-lang/anal> for the language specification.
+//! See <https://github.com/1xn/anal> for the language specification.
 
 pub mod ast;
 pub mod compiler;

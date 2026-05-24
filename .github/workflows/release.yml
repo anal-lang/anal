@@ -130,18 +130,18 @@ jobs:
           body: |
             ANAL ${{ github.ref_name }}.
 
-            Data arrives, in order, with consent. See the [specification](https://github.com/anal-lang/anal/blob/${{ github.ref_name }}/docs/index.html) for what changed.
+            Data arrives, in order, with consent. See the [specification](https://github.com/1xn/anal/blob/${{ github.ref_name }}/docs/index.html) for what changed.
 
             ## Install
 
             **Linux / macOS**
             ```sh
-            curl -sSf https://github.com/anal-lang/anal/releases/download/${{ github.ref_name }}/install.sh | sh
+            curl -sSf https://github.com/1xn/anal/releases/download/${{ github.ref_name }}/install.sh | sh
             ```
 
             **Windows (PowerShell)**
             ```powershell
-            irm https://github.com/anal-lang/anal/releases/download/${{ github.ref_name }}/install.ps1 | iex
+            irm https://github.com/1xn/anal/releases/download/${{ github.ref_name }}/install.ps1 | iex
             ```
 
             Or download a binary below and unpack it onto your `PATH`.

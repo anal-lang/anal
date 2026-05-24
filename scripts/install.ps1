@@ -11,7 +11,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'anal-lang/anal'
+$Repo = '1xn/anal'
 $Bin  = 'anal.exe'
 
 function Say  { param($m) Write-Host $m }

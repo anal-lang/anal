@@ -8,8 +8,8 @@
 
 *A stack-based, strongly-typed programming language with consent-enforced destructive operations.*
 
-[![CI](https://github.com/anal-lang/anal/actions/workflows/ci.yml/badge.svg)](https://github.com/anal-lang/anal/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/anal-lang/anal?label=release)](https://github.com/anal-lang/anal/releases/latest)
+[![CI](https://github.com/1xn/anal/actions/workflows/ci.yml/badge.svg)](https://github.com/1xn/anal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/1xn/anal?label=release)](https://github.com/1xn/anal/releases/latest)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-informational)](LICENSE)
 [![Spec: v0.1](https://img.shields.io/badge/spec-v0.1-blue)](docs/index.html)
 
@@ -76,16 +76,16 @@ Binary releases for Linux, macOS, and Windows are published on every tag. The in
 **Linux / macOS**
 
 ```sh
-curl -sSf https://github.com/anal-lang/anal/releases/latest/download/install.sh | sh
+curl -sSf https://github.com/1xn/anal/releases/latest/download/install.sh | sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://github.com/anal-lang/anal/releases/latest/download/install.ps1 | iex
+irm https://github.com/1xn/anal/releases/latest/download/install.ps1 | iex
 ```
 
-Or grab a tarball directly from the [releases page](https://github.com/anal-lang/anal/releases/latest) and unpack the `anal` binary onto your `PATH`.
+Or grab a tarball directly from the [releases page](https://github.com/1xn/anal/releases/latest) and unpack the `anal` binary onto your `PATH`.
 
 Pin a specific version with `ANAL_VERSION=v0.1.0` (sh) or `$env:ANAL_VERSION='v0.1.0'` (PowerShell) before piping. Change the destination with `ANAL_INSTALL_DIR`.
 
