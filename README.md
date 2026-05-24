@@ -42,6 +42,13 @@ ANAL does not destroy without asking. When refused, it leaves things as they wer
 
 The interpreter renders mistakes in spec-voice.
 
+<p align="center">
+  <img src="docs/img/error.png" alt="TIGHTNESS error rendered by the anal interpreter: squiggle under INSERT, help line, spec-voice note reading 'always prepare. ANAL does not stretch on demand.'" width="640">
+</p>
+
+<details>
+<summary>Plain-text rendering</summary>
+
 ```text
 [E001] Error: TIGHTNESS
    ╭─[ examples/bad.anal:7:1 ]
@@ -55,6 +62,8 @@ The interpreter renders mistakes in spec-voice.
    │ Note: always prepare. ANAL does not stretch on demand.
 ───╯
 ```
+
+</details>
 
 Other errors you can earn: `REFUSAL`, `PREMATURE_RELEASE`, `PENETRATION_DEPTH`. The runtime does not apologise.
 
@@ -96,6 +105,7 @@ The [`examples/`](examples/) directory contains the canonical demonstrations. Al
 | [`square.anal`](examples/square.anal) | First-class subroutines via `PASSAGE` / `ENTER` / `EXIT`. |
 | [`add_two.anal`](examples/add_two.anal) | Reading from stdin with `RECEIVE`. |
 | [`echo.anal`](examples/echo.anal) | The minimal `RECEIVE` / `DISCHARGE` round-trip. |
+| [`bad.anal`](examples/bad.anal) | What a `TIGHTNESS` looks like. Run it on purpose. |
 
 Run any of them:
 

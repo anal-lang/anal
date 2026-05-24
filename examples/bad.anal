@@ -1,0 +1,7 @@
+ANAL "screenshot" VERSION 1
+
+PUSH 10
+PUSH 20
+PUSH 30
+
+INSERT 1 99
