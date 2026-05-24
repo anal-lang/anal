@@ -95,6 +95,7 @@ The [`examples/`](examples/) directory contains the canonical demonstrations. Al
 | [`fizzbuzz.anal`](examples/fizzbuzz.anal) | FizzBuzz on a stack with no chained conditionals. |
 | [`square.anal`](examples/square.anal) | First-class subroutines via `PASSAGE` / `ENTER` / `EXIT`. |
 | [`add_two.anal`](examples/add_two.anal) | Reading from stdin with `RECEIVE`. |
+| [`echo.anal`](examples/echo.anal) | The minimal `RECEIVE` / `DISCHARGE` round-trip. |
 
 Run any of them:
 
@@ -114,7 +115,7 @@ anal probe examples/consent_dialog.anal
 
 **v0.1 has shipped.** The reference implementation in Rust runs every example in this repository end-to-end. The [language specification](docs/index.html) documents what the v0.1 interpreter accepts.
 
-What's in v0.1: stack ops, arithmetic, comparison, control flow (`IF_TIGHT`, `DILATE`/`CONSTRICT`), I/O (`DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, and ariadne-rendered diagnostics.
+What's in v0.1: stack ops (`PUSH`, `POP`, `DUP`, `SWAP`, `DEPTH`, `PROBE`), arithmetic, comparison, control flow (`IF_TIGHT`, `IF_LOOSE`, `DILATE`/`CONSTRICT`, `ABORT`), I/O (`EXPEL`, `DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `INSERT`, `EXTRACT`, `FLUSH`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, and ariadne-rendered diagnostics. `EXPAND` / `HOLD` / `RESUME` are accepted by the parser but are currently no-ops past argument validation.
 
 What is not in v0.1: a module system, a type system beyond the built-in scalars, FFI, a REPL, or any form of concurrency.
 
@@ -144,7 +145,10 @@ Proposals go through the RFC PASSAGE process. The PASSAGE process typically take
 It isn't. It is precise. Politeness and precision are easily confused.
 
 **Can I write a linter / formatter / language server?**
-Yes. The reference grammar is in [`docs/index.html`](docs/index.html); the AST is exposed in [`crates/anal-core`](crates/anal-core). Tooling is welcome. It still cannot be submitted as a pull request.
+Yes. The reference grammar is in [`docs/index.html`](docs/index.html); the lexer and parser live in [`crates/anal-core`](crates/anal-core). Tooling is welcome. It still cannot be submitted as a pull request.
+
+**Will the compiler ever be written in ANAL itself?**
+That is the eventual goal — a self-hosted `analc` that emits `.sph` bytecode. Until then, the reference compiler is Rust and reserves the [`ast`](crates/anal-core/src/ast.rs) and [`compiler`](crates/anal-core/src/compiler.rs) namespaces for the bootstrap.
 
 ---
 
