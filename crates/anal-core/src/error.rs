@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use ariadne::{Color, Label, Report, ReportKind, Source};
+use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 
 use crate::token::Span;
 
@@ -105,10 +105,13 @@ impl AnalError {
     ///
     /// `source_id` is the file path (or `"<stdin>"` etc.) shown in the
     /// header; `source` is the full source text the span indexes into.
+    /// `color` toggles ANSI escapes; pass `false` when writing to a
+    /// non-tty sink.
     pub fn render<W: Write>(
         &self,
         source_id: &str,
         source: &str,
+        color: bool,
         out: &mut W,
     ) -> std::io::Result<()> {
         let span = self.span();
@@ -118,6 +121,7 @@ impl AnalError {
 
         let mut builder = Report::build(ReportKind::Error, source_id, range.start)
             .with_code(self.code())
+            .with_config(Config::default().with_color(color))
             .with_message(title);
 
         let label = Label::new((source_id, range))
