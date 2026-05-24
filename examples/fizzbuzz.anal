@@ -1,0 +1,27 @@
+; fizzbuzz.anal — counter from 1 to 15 with Fizz / Buzz annotations.
+;
+; Pure stack semantics don't have a chained if/elif/else, so this prints
+; the number on every iteration and then any matching label. Multiples
+; of 15 therefore emit "Fizz" and "Buzz" on separate lines. That is a
+; faithful FizzBuzz given the spec's primitives — chaining tests would
+; require carrying a "labeled" boolean through the loop manually.
+
+ANAL "fizzbuzz" VERSION 1
+
+PUSH 1
+DUP PUSH 16 LT
+
+DILATE
+  DUP DISCHARGE                       ; emit the counter, pop the copy
+
+  DUP PUSH 3 MOD PUSH 0 EQ
+  IF_TIGHT [ PUSH "Fizz" DISCHARGE ]
+
+  DUP PUSH 5 MOD PUSH 0 EQ
+  IF_TIGHT [ PUSH "Buzz" DISCHARGE ]
+
+  PUSH 1 ADD
+  DUP PUSH 16 LT
+CONSTRICT
+
+POP

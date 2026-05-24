@@ -279,9 +279,24 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            // ── IF_TIGHT / IF_LOOSE [ ... ] ────────────
-            Token::IfTight => self.parse_conditional_block(true, span)?,
-            Token::IfLoose => self.parse_conditional_block(false, span)?,
+            // ── IF_TIGHT / IF_LOOSE [ ... ] — pop BLOC + cond ──
+            //
+            // `IF_TIGHT [ ... ]` is sugar for "push the BLOC then exec".
+            // A bare `IF_TIGHT` consumes whatever BLOC is already on top.
+            Token::IfTight => {
+                self.parse_inline_bloc_if_present(span)?;
+                self.emit(Op::IfTightExec, span);
+            }
+            Token::IfLoose => {
+                self.parse_inline_bloc_if_present(span)?;
+                self.emit(Op::IfLooseExec, span);
+            }
+
+            // ── Standalone `[ ... ]` — a BLOC literal value ──
+            Token::LBracket => {
+                let body = self.parse_bloc_body(span)?;
+                self.emit(Op::Push(Value::Bloc(body)), span);
+            }
 
             // ── PREP / CONSENT / CLENCH / RELEASE ──────
             Token::Prep => self.emit(Op::Prep, span),
@@ -311,23 +326,20 @@ impl<'a> Parser<'a> {
                 self.emit(Op::Expand(n), span);
             }
 
-            // ── ENTER <passage> ────────────────────────
-            Token::Enter => {
-                let name_tok = self.advance().ok_or_else(|| AnalError::Parse {
-                    message: "ENTER expects a passage name".into(),
-                    span,
-                })?;
-                let name = match name_tok.node {
-                    Token::Ident(n) => n,
-                    other => {
-                        return Err(AnalError::Parse {
-                            message: format!("ENTER expects an identifier, found {other:?}"),
-                            span: name_tok.span,
-                        });
-                    }
-                };
-                self.emit(Op::Enter(name), span);
-            }
+            // ── ENTER ───────────────────────────────────
+            //
+            //   ENTER <name>   — call a named PASSAGE
+            //   ENTER          — pop a BLOC from the stack and execute it
+            Token::Enter => match self.peek_kind() {
+                Some(Token::Ident(_)) => {
+                    let name_tok = self.advance().unwrap();
+                    let Token::Ident(name) = name_tok.node else {
+                        unreachable!()
+                    };
+                    self.emit(Op::Enter(name), span);
+                }
+                _ => self.emit(Op::EnterStack, span),
+            },
 
             // ── PASSAGE / EXIT outside their valid positions ──
             Token::Passage => {
@@ -449,25 +461,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_conditional_block(&mut self, on_truthy: bool, kw_span: Span) -> Result<(), AnalError> {
-        match self.peek_kind() {
-            Some(Token::LBracket) => {
-                self.advance();
-            }
-            _ => {
-                return Err(AnalError::Parse {
-                    message: "IF_TIGHT/IF_LOOSE expects `[`".into(),
-                    span: kw_span,
-                });
-            }
+    /// If the next token is `[`, parse it as a BLOC literal and emit a
+    /// `Push(Bloc)` so the inline `IF_TIGHT [ ... ]` form puts the BLOC on
+    /// the stack just before the consumer op runs. If `[` is not next,
+    /// this is a no-op — the BLOC is assumed to already be on the stack.
+    fn parse_inline_bloc_if_present(&mut self, kw_span: Span) -> Result<(), AnalError> {
+        if matches!(self.peek_kind(), Some(Token::LBracket)) {
+            self.advance();
+            let body = self.parse_bloc_body(kw_span)?;
+            self.emit(Op::Push(Value::Bloc(body)), kw_span);
         }
-        let jump_addr = self.instrs.len();
-        let skip_op = if on_truthy {
-            Op::JumpIfFalsy(0)
-        } else {
-            Op::JumpIfTruthy(0)
-        };
-        self.emit(skip_op, kw_span);
+        Ok(())
+    }
+
+    /// Compile the body of a BLOC literal (everything between `[` and `]`)
+    /// into a fresh instruction stream. The opening `[` is assumed to be
+    /// already consumed.
+    fn parse_bloc_body(&mut self, open_span: Span) -> Result<Rc<[Instr]>, AnalError> {
+        let saved_instrs = std::mem::take(&mut self.instrs);
+        let saved_loops = std::mem::take(&mut self.loop_stack);
 
         loop {
             match self.peek_kind() {
@@ -478,19 +490,22 @@ impl<'a> Parser<'a> {
                 Some(_) => self.parse_statement()?,
                 None => {
                     return Err(AnalError::Parse {
-                        message: "expected `]` to close conditional block".into(),
-                        span: kw_span,
+                        message: "BLOC literal `[` was never closed with `]`".into(),
+                        span: open_span,
                     });
                 }
             }
         }
 
-        let after_body = self.instrs.len();
-        match &mut self.instrs[jump_addr].op {
-            Op::JumpIfFalsy(target) | Op::JumpIfTruthy(target) => *target = after_body,
-            _ => unreachable!("we just emitted a JumpIfFalsy/JumpIfTruthy"),
+        if let Some((jump_addr, _)) = self.loop_stack.last() {
+            return Err(AnalError::Rupture {
+                span: self.instrs[*jump_addr].span,
+            });
         }
-        Ok(())
+
+        let body = std::mem::replace(&mut self.instrs, saved_instrs);
+        self.loop_stack = saved_loops;
+        Ok(Rc::from(body.into_boxed_slice()))
     }
 }
 

@@ -87,9 +87,15 @@ pub enum Op {
     Jump(usize),
     JumpIfFalsy(usize),
     JumpIfTruthy(usize),
-    /// Call into a passage by name (resolved at compile time in v0.2).
+    /// Call into a passage by name.
     Enter(String),
-    /// Return from the current passage.
+    /// Pop a BLOC from the stack and execute it.
+    EnterStack,
+    /// Pop a BLOC and a condition. If condition is truthy, run the BLOC.
+    IfTightExec,
+    /// Pop a BLOC and a condition. If condition is falsy, run the BLOC.
+    IfLooseExec,
+    /// Return from the current passage or BLOC.
     Return,
     /// Terminate the program immediately.
     Abort,

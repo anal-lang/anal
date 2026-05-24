@@ -206,7 +206,7 @@ impl VM {
                 return Ok(Flow::Return);
             }
 
-            // ── PASSAGE call/return ─────────────────────
+            // ── PASSAGE / BLOC call & return ────────────
             Op::Enter(name) => {
                 let passage = program
                     .passages
@@ -217,6 +217,27 @@ impl VM {
                     })?
                     .clone();
                 self.run_block(&passage, program, input, out, err)?;
+            }
+            Op::EnterStack => {
+                self.check_unclenched("ENTER", span)?;
+                let bloc = self.pop_bloc("ENTER", span)?;
+                self.run_block(&bloc, program, input, out, err)?;
+            }
+            Op::IfTightExec => {
+                self.check_unclenched("IF_TIGHT", span)?;
+                let bloc = self.pop_bloc("IF_TIGHT", span)?;
+                let cond = self.pop("IF_TIGHT", span)?;
+                if cond.is_truthy() {
+                    self.run_block(&bloc, program, input, out, err)?;
+                }
+            }
+            Op::IfLooseExec => {
+                self.check_unclenched("IF_LOOSE", span)?;
+                let bloc = self.pop_bloc("IF_LOOSE", span)?;
+                let cond = self.pop("IF_LOOSE", span)?;
+                if !cond.is_truthy() {
+                    self.run_block(&bloc, program, input, out, err)?;
+                }
             }
             Op::Return => return Ok(Flow::Return),
 
@@ -380,6 +401,17 @@ impl VM {
 
     fn peek(&self, op: &'static str, span: Span) -> Result<&Value, AnalError> {
         self.stack.last().ok_or(AnalError::Emptiness { op, span })
+    }
+
+    fn pop_bloc(&mut self, op: &'static str, span: Span) -> Result<Rc<[Instr]>, AnalError> {
+        match self.pop(op, span)? {
+            Value::Bloc(body) => Ok(body),
+            other => Err(AnalError::Rejection {
+                expected: "BLOC",
+                found: other.type_name().into(),
+                span,
+            }),
+        }
     }
 
     fn binop_arith(
@@ -937,6 +969,88 @@ DISCHARGE"#);
         let (_, _, result) = run(&src);
         let _ = std::fs::remove_file(&path);
         assert!(matches!(result.unwrap_err(), AnalError::Refusal { .. }));
+    }
+
+    // ── BLOC as a first-class value ─────────────────────
+
+    #[test]
+    fn bloc_pushed_as_value_and_entered() {
+        let (out, _, result) = run(r#"[ PUSH "from inside the bloc" DISCHARGE ]
+ENTER"#);
+        result.unwrap();
+        assert_eq!(out, "from inside the bloc\n");
+    }
+
+    #[test]
+    fn bloc_executed_twice_via_dup() {
+        let (out, _, result) = run(r#"[ PUSH "hello" DISCHARGE ]
+DUP
+ENTER
+ENTER"#);
+        result.unwrap();
+        assert_eq!(out, "hello\nhello\n");
+    }
+
+    #[test]
+    fn if_tight_with_separate_bloc_push_works() {
+        // Push condition + BLOC separately, then IF_TIGHT consumes both.
+        let (out, _, result) = run(r#"PUSH 1
+[ PUSH "yes" DISCHARGE ]
+IF_TIGHT"#);
+        result.unwrap();
+        assert_eq!(out, "yes\n");
+    }
+
+    #[test]
+    fn if_loose_branches_on_falsy() {
+        let (out, _, result) = run(r#"PUSH 0
+IF_LOOSE [ PUSH "ran" DISCHARGE ]"#);
+        result.unwrap();
+        assert_eq!(out, "ran\n");
+    }
+
+    #[test]
+    fn enter_on_non_bloc_raises_rejection() {
+        let (_, _, result) = run(r#"PUSH 42
+ENTER"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Rejection { .. }));
+    }
+
+    #[test]
+    fn nested_blocs_execute_correctly() {
+        // Outer IF_TIGHT runs the BLOC; inside it, another IF_TIGHT runs
+        // its own nested BLOC. Verifies that nested run_block calls don't
+        // confuse each other's stacks.
+        let (out, _, result) = run(r#"PUSH 1
+IF_TIGHT [
+  PUSH "outer "
+  EXPEL
+  PUSH 1
+  IF_TIGHT [ PUSH "inner" DISCHARGE ]
+  POP
+]"#);
+        result.unwrap();
+        assert_eq!(out, "outer \ninner\n");
+    }
+
+    #[test]
+    fn bloc_with_loop_inside() {
+        // Loop body inside a BLOC — proves DILATE/CONSTRICT addresses
+        // are local to each compiled block. The BLOC builds its own
+        // counter rather than inheriting one from the caller.
+        let (out, _, result) = run(r#"PUSH 1
+IF_TIGHT [
+  PUSH 3
+  DUP PUSH 0 GT
+  DILATE
+    DUP DISCHARGE
+    PUSH 1 SUB
+    DUP PUSH 0 GT
+  CONSTRICT
+  POP
+]"#);
+        result.unwrap();
+        assert_eq!(out, "3\n2\n1\n");
     }
 
     #[test]
