@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            ext: .exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --bin anal --target ${{ matrix.target }}
+          else
+            cargo build --release --bin anal --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="anal-${version}-${{ matrix.target }}"
+          staging="dist/${name}"
+          mkdir -p "${staging}"
+          cp "target/${{ matrix.target }}/release/anal${{ matrix.ext }}" "${staging}/"
+          cp README.md LICENSE "${staging}/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "${name}.zip" "${name}" >/dev/null
+            asset="${name}.zip"
+          else
+            tar czf "${name}.tar.gz" "${name}"
+            asset="${name}.tar.gz"
+          fi
+          # Portable SHA-256: shasum is present on macOS/Linux runners; certutil on Windows.
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${asset}" > "${asset}.sha256"
+          else
+            certutil -hashfile "${asset}" SHA256 | sed -n '2p' | tr -d ' \r' > "${asset}.sha256.raw"
+            printf '%s  %s\n' "$(cat ${asset}.sha256.raw)" "${asset}" > "${asset}.sha256"
+            rm "${asset}.sha256.raw"
+          fi
+          echo "asset=dist/${asset}" >> "$GITHUB_OUTPUT"
+          echo "sum=dist/${asset}.sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.pkg.outputs.asset }}
+            ${{ steps.pkg.outputs.sum }}
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Stage install scripts
+        run: |
+          cp scripts/install.sh dist/install.sh
+          cp scripts/install.ps1 dist/install.ps1
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/install.sh
+            dist/install.ps1
+          body: |
+            ANAL ${{ github.ref_name }}.
+
+            Data arrives, in order, with consent. See the [specification](https://github.com/anal-lang/anal/blob/${{ github.ref_name }}/docs/index.html) for what changed.
+
+            ## Install
+
+            **Linux / macOS**
+            ```sh
+            curl -sSf https://github.com/anal-lang/anal/releases/download/${{ github.ref_name }}/install.sh | sh
+            ```
+
+            **Windows (PowerShell)**
+            ```powershell
+            irm https://github.com/anal-lang/anal/releases/download/${{ github.ref_name }}/install.ps1 | iex
+            ```
+
+            Or download a binary below and unpack it onto your `PATH`.

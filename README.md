@@ -23,8 +23,28 @@ and will be published at <https://anal-lang.github.io/anal/> when v0.1 ships.
 
 ## Install
 
-Not yet available. v0.1 will ship as binary releases for Linux, macOS, and
-Windows on tag.
+Binary releases for Linux, macOS, and Windows are published on every tag.
+The installer prompts for `CONSENT`, verifies a SHA-256 checksum, then
+`INSERT`s `anal` onto your `PATH`.
+
+**Linux / macOS**
+
+```sh
+curl -sSf https://github.com/anal-lang/anal/releases/latest/download/install.sh | sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://github.com/anal-lang/anal/releases/latest/download/install.ps1 | iex
+```
+
+Or grab a tarball directly from the [releases page](https://github.com/anal-lang/anal/releases/latest)
+and unpack the `anal` binary onto your `PATH`.
+
+Pin a specific version with `ANAL_VERSION=v0.1.0` (sh) or
+`$env:ANAL_VERSION='v0.1.0'` (PowerShell) before piping. Change the
+destination with `ANAL_INSTALL_DIR`.
 
 ## Contributing
 
