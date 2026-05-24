@@ -1,0 +1,48 @@
+; consent_dialog.anal — an interactive program that asks the user for
+; consent before performing a destructive operation, then honours the
+; answer. The whole point of the language compressed into one program.
+;
+;   $ anal run examples/consent_dialog.anal
+;   Stack snapshot: [1, 2, 3]
+;   May I FLUSH it? (yes / no)
+;   yes
+;   Consent given. Stack cleared.
+;   Final depth:
+;   0
+;
+;   $ anal run examples/consent_dialog.anal
+;   Stack snapshot: [1, 2, 3]
+;   May I FLUSH it? (yes / no)
+;   no
+;   Final depth:
+;   3
+;
+; ANAL does not destroy without asking. When refused, it leaves things
+; as they were and continues.
+
+ANAL "consent_dialog" VERSION 1
+
+PUSH 1
+PUSH 2
+PUSH 3
+
+PUSH "Stack snapshot: [1, 2, 3]"
+DISCHARGE
+PUSH "May I FLUSH it? (yes / no)"
+DISCHARGE
+
+RECEIVE
+PUSH "yes"
+EQ
+
+IF_TIGHT [
+  CONSENT
+  FLUSH
+  PUSH "Consent given. Stack cleared."
+  DISCHARGE
+]
+
+PUSH "Final depth:"
+DISCHARGE
+DEPTH
+DISCHARGE

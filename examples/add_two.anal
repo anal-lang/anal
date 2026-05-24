@@ -1,0 +1,30 @@
+; add_two.anal — read two integers from stdin, push their sum.
+;
+; The "hello world" of interactive ANAL: shows RECEIVE feeding into
+; TO_INT and ADD, with DISCHARGE producing the final answer.
+;
+;   $ anal run examples/add_two.anal
+;   first number:
+;   17                ← you type
+;   second number:
+;   25                ← you type
+;   sum:
+;   42
+
+ANAL "add_two" VERSION 1
+
+PUSH "first number:"
+DISCHARGE
+RECEIVE
+TO_INT
+
+PUSH "second number:"
+DISCHARGE
+RECEIVE
+TO_INT
+
+ADD
+
+PUSH "sum:"
+DISCHARGE
+DISCHARGE
