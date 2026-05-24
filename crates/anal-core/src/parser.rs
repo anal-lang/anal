@@ -194,6 +194,34 @@ impl<'a> Parser<'a> {
             Token::IfTight => self.parse_conditional_block(true, span)?,
             Token::IfLoose => self.parse_conditional_block(false, span)?,
 
+            // ── PREP / CONSENT / CLENCH / RELEASE ──────
+            Token::Prep => self.emit(Op::Prep, span),
+            Token::Consent => self.emit(Op::Consent, span),
+            Token::Clench => self.emit(Op::Clench, span),
+            Token::Release => self.emit(Op::Release, span),
+
+            // ── FLUSH ──────────────────────────────────
+            Token::Flush => self.emit(Op::Flush, span),
+
+            // ── INSERT <depth> <value> ─────────────────
+            Token::Insert => {
+                let depth = self.parse_uint_operand("INSERT depth", span)?;
+                let value = self.parse_literal(span)?;
+                self.emit(Op::Insert { depth, value }, span);
+            }
+
+            // ── EXTRACT <depth> ────────────────────────
+            Token::Extract => {
+                let depth = self.parse_uint_operand("EXTRACT depth", span)?;
+                self.emit(Op::Extract(depth), span);
+            }
+
+            // ── EXPAND <n> ─────────────────────────────
+            Token::Expand => {
+                let n = self.parse_uint_operand("EXPAND amount", span)?;
+                self.emit(Op::Expand(n), span);
+            }
+
             // ── CASING: lowercase form of a known keyword ─
             Token::Ident(name) => {
                 if name != name.to_uppercase() && is_known_keyword(&name.to_uppercase()) {
@@ -217,15 +245,7 @@ impl<'a> Parser<'a> {
             }
 
             // ── Spec'd but not yet supported in v0.1 ───
-            other @ (Token::Insert
-            | Token::Extract
-            | Token::Flush
-            | Token::Prep
-            | Token::Clench
-            | Token::Release
-            | Token::Consent
-            | Token::Expand
-            | Token::Hold
+            other @ (Token::Hold
             | Token::Resume
             | Token::Receive
             | Token::Evacuate
@@ -247,6 +267,24 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    fn parse_uint_operand(&mut self, what: &str, kw_span: Span) -> Result<usize, AnalError> {
+        let tok = self.advance().ok_or_else(|| AnalError::Parse {
+            message: format!("{what} expects a non-negative integer"),
+            span: kw_span,
+        })?;
+        match tok.node {
+            Token::Int(n) if n >= 0 => Ok(n as usize),
+            Token::Int(_) => Err(AnalError::Parse {
+                message: format!("{what} must be non-negative"),
+                span: tok.span,
+            }),
+            other => Err(AnalError::Parse {
+                message: format!("{what} expects an integer literal, found {other:?}"),
+                span: tok.span,
+            }),
+        }
     }
 
     fn parse_literal(&mut self, push_span: Span) -> Result<Value, AnalError> {

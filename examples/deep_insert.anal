@@ -1,0 +1,33 @@
+; deep_insert.anal — PREP and CONSENT in motion.
+;
+; Demonstrates the one-shot capability tokens:
+;   * PREP arms the next INSERT; without it, INSERT raises TIGHTNESS.
+;   * CONSENT arms the next destructive op (EXTRACT/FLUSH);
+;     without it, EXTRACT raises REFUSAL.
+; Both flags clear after a single use — the spec does not assume
+; ongoing consent.
+
+ANAL "deep_insert" VERSION 1
+
+PUSH 10
+PUSH 20
+PUSH 30
+; Stack (bottom → top): 10, 20, 30
+
+PREP
+INSERT 2 15
+; Stack: 10, 15, 20, 30
+; PREP consumed.
+
+CONSENT
+EXTRACT 1
+; Stack: 10, 15, 30   (depth-1 value, 20, removed)
+; CONSENT consumed.
+
+DISCHARGE
+DISCHARGE
+DISCHARGE
+; Output (top first):
+; 30
+; 15
+; 10

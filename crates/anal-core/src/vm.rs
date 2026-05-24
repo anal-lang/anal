@@ -17,6 +17,16 @@ use crate::value::Value;
 pub struct VM {
     stack: Vec<Value>,
     pc: usize,
+    /// `PREP` arms a one-shot readiness flag for the next `INSERT`.
+    /// `INSERT` clears it; calling `INSERT` without it raises `TIGHTNESS`.
+    prep_armed: bool,
+    /// `CONSENT` arms a one-shot capability flag for the next destructive
+    /// operation. `EXTRACT` and `FLUSH` consume it; calling them without it
+    /// raises `REFUSAL`.
+    consent_armed: bool,
+    /// Number of unmatched `CLENCH`es. While non-zero, write ops raise
+    /// `LOCKDOWN`. `PROBE` and `EXPEL` remain available.
+    clench_depth: u32,
 }
 
 impl Default for VM {
@@ -30,6 +40,9 @@ impl VM {
         Self {
             stack: Vec::new(),
             pc: 0,
+            prep_armed: false,
+            consent_armed: false,
+            clench_depth: 0,
         }
     }
 
@@ -67,8 +80,12 @@ impl VM {
     ) -> Result<(), AnalError> {
         match op {
             // ── stack ───────────────────────────────────
-            Op::Push(v) => self.stack.push(v.clone()),
+            Op::Push(v) => {
+                self.check_unclenched("PUSH", span)?;
+                self.stack.push(v.clone());
+            }
             Op::Pop => {
+                self.check_unclenched("POP", span)?;
                 self.pop("POP", span)?;
             }
             Op::Probe => {
@@ -76,17 +93,22 @@ impl VM {
                 writeln!(err, "{top}").map_err(|_| io_err("PROBE", span))?;
             }
             Op::Dup => {
+                self.check_unclenched("DUP", span)?;
                 let top = self.peek("DUP", span)?.clone();
                 self.stack.push(top);
             }
             Op::Swap => {
+                self.check_unclenched("SWAP", span)?;
                 let n = self.stack.len();
                 if n < 2 {
                     return Err(AnalError::Emptiness { op: "SWAP", span });
                 }
                 self.stack.swap(n - 1, n - 2);
             }
-            Op::Depth => self.stack.push(Value::Int(self.stack.len() as i64)),
+            Op::Depth => {
+                self.check_unclenched("DEPTH", span)?;
+                self.stack.push(Value::Int(self.stack.len() as i64));
+            }
 
             // ── I/O ─────────────────────────────────────
             Op::Expel => {
@@ -94,6 +116,7 @@ impl VM {
                 writeln!(out, "{top}").map_err(|_| io_err("EXPEL", span))?;
             }
             Op::Discharge => {
+                self.check_unclenched("DISCHARGE", span)?;
                 let top = self.pop("DISCHARGE", span)?;
                 writeln!(out, "{top}").map_err(|_| io_err("DISCHARGE", span))?;
             }
@@ -107,6 +130,7 @@ impl VM {
 
             // ── comparison ──────────────────────────────
             Op::EqOp => {
+                self.check_unclenched("EQ", span)?;
                 let b = self.pop("EQ", span)?;
                 let a = self.pop("EQ", span)?;
                 self.stack.push(Value::Bool(a == b));
@@ -116,6 +140,7 @@ impl VM {
             Op::Lte => self.binop_cmp(span, "LTE", |o| o != Ordering::Greater)?,
             Op::Gte => self.binop_cmp(span, "GTE", |o| o != Ordering::Less)?,
             Op::Not => {
+                self.check_unclenched("NOT", span)?;
                 let v = self.pop("NOT", span)?;
                 self.stack.push(Value::Bool(!v.is_truthy()));
             }
@@ -128,12 +153,14 @@ impl VM {
             // ── flow control ────────────────────────────
             Op::Jump(target) => self.pc = *target,
             Op::JumpIfFalsy(target) => {
+                self.check_unclenched("DILATE/IF_TIGHT", span)?;
                 let cond = self.pop("DILATE/IF_TIGHT", span)?;
                 if !cond.is_truthy() {
                     self.pc = *target;
                 }
             }
             Op::JumpIfTruthy(target) => {
+                self.check_unclenched("CONSTRICT/IF_LOOSE", span)?;
                 let cond = self.pop("CONSTRICT/IF_LOOSE", span)?;
                 if cond.is_truthy() {
                     self.pc = *target;
@@ -143,16 +170,80 @@ impl VM {
                 self.pc = usize::MAX;
             }
 
-            // ── spec'd but not yet implemented ──────────
-            Op::Insert { .. }
-            | Op::Extract(_)
-            | Op::Flush
-            | Op::Prep
-            | Op::Clench
-            | Op::Release
-            | Op::Consent
-            | Op::Expand(_)
-            | Op::Hold(_)
+            // ── PREP / CONSENT / CLENCH / RELEASE ───────
+            Op::Prep => {
+                self.check_unclenched("PREP", span)?;
+                self.prep_armed = true;
+            }
+            Op::Consent => {
+                self.check_unclenched("CONSENT", span)?;
+                self.consent_armed = true;
+            }
+            Op::Clench => {
+                self.clench_depth = self.clench_depth.saturating_add(1);
+            }
+            Op::Release => {
+                if self.clench_depth == 0 {
+                    return Err(AnalError::PrematureRelease { span });
+                }
+                self.clench_depth -= 1;
+            }
+
+            // ── INSERT / EXTRACT / FLUSH ────────────────
+            Op::Insert { depth, value } => {
+                self.check_unclenched("INSERT", span)?;
+                if !self.prep_armed {
+                    return Err(AnalError::Tightness { span });
+                }
+                let len = self.stack.len();
+                if *depth > len {
+                    return Err(AnalError::PenetrationDepth {
+                        depth: *depth,
+                        size: len,
+                        span,
+                    });
+                }
+                let idx = len - *depth;
+                self.stack.insert(idx, value.clone());
+                self.prep_armed = false;
+            }
+            Op::Extract(depth) => {
+                self.check_unclenched("EXTRACT", span)?;
+                if !self.consent_armed {
+                    return Err(AnalError::Refusal {
+                        op: "EXTRACT",
+                        span,
+                    });
+                }
+                let len = self.stack.len();
+                if *depth >= len {
+                    return Err(AnalError::PenetrationDepth {
+                        depth: *depth,
+                        size: len,
+                        span,
+                    });
+                }
+                let idx = len - 1 - *depth;
+                self.stack.remove(idx);
+                self.consent_armed = false;
+            }
+            Op::Flush => {
+                self.check_unclenched("FLUSH", span)?;
+                if !self.consent_armed {
+                    return Err(AnalError::Refusal { op: "FLUSH", span });
+                }
+                self.stack.clear();
+                self.consent_armed = false;
+            }
+
+            // ── EXPAND: spec'd as "grow buffer". Vec grows on demand,
+            //    so we treat EXPAND as a no-op past argument validation.
+            Op::Expand(_n) => {
+                self.check_unclenched("EXPAND", span)?;
+            }
+
+            // ── still pending in v0.2 ───────────────────
+            Op::Hold(_)
             | Op::Resume
             | Op::Receive
             | Op::IngestFile
@@ -166,6 +257,15 @@ impl VM {
             }
         }
         Ok(())
+    }
+
+    /// Raise `LOCKDOWN` if the stack is currently clenched.
+    fn check_unclenched(&self, op: &'static str, span: Span) -> Result<(), AnalError> {
+        if self.clench_depth > 0 {
+            Err(AnalError::Lockdown { op, span })
+        } else {
+            Ok(())
+        }
     }
 
     fn pop(&mut self, op: &'static str, span: Span) -> Result<Value, AnalError> {
@@ -183,6 +283,7 @@ impl VM {
         f_int: impl Fn(i64, i64) -> i64,
         f_float: impl Fn(f64, f64) -> f64,
     ) -> Result<(), AnalError> {
+        self.check_unclenched(op_name, span)?;
         let b = self.pop(op_name, span)?;
         let a = self.pop(op_name, span)?;
         let result = match (&a, &b) {
@@ -201,6 +302,7 @@ impl VM {
     }
 
     fn binop_div(&mut self, span: Span, op_name: &'static str) -> Result<(), AnalError> {
+        self.check_unclenched(op_name, span)?;
         let b = self.pop(op_name, span)?;
         let a = self.pop(op_name, span)?;
         let result = match (&a, &b) {
@@ -226,6 +328,7 @@ impl VM {
     }
 
     fn binop_mod(&mut self, span: Span, op_name: &'static str) -> Result<(), AnalError> {
+        self.check_unclenched(op_name, span)?;
         let b = self.pop(op_name, span)?;
         let a = self.pop(op_name, span)?;
         let result = match (&a, &b) {
@@ -256,6 +359,7 @@ impl VM {
         op_name: &'static str,
         f: impl Fn(Ordering) -> bool,
     ) -> Result<(), AnalError> {
+        self.check_unclenched(op_name, span)?;
         let b = self.pop(op_name, span)?;
         let a = self.pop(op_name, span)?;
         let ord = match (&a, &b) {
@@ -278,6 +382,7 @@ impl VM {
     }
 
     fn convert_to_int(&mut self, span: Span) -> Result<(), AnalError> {
+        self.check_unclenched("TO_INT", span)?;
         let v = self.pop("TO_INT", span)?;
         let n = match &v {
             Value::Int(n) => *n,
@@ -301,6 +406,7 @@ impl VM {
     }
 
     fn convert_to_float(&mut self, span: Span) -> Result<(), AnalError> {
+        self.check_unclenched("TO_FLOAT", span)?;
         let v = self.pop("TO_FLOAT", span)?;
         let x = match &v {
             Value::Int(n) => *n as f64,
@@ -330,6 +436,7 @@ impl VM {
     }
 
     fn convert_to_str(&mut self, span: Span) -> Result<(), AnalError> {
+        self.check_unclenched("TO_STRING", span)?;
         let v = self.pop("TO_STRING", span)?;
         let s = format!("{v}");
         self.stack.push(Value::Str(Rc::from(s.as_str())));
@@ -427,5 +534,156 @@ IF_TIGHT [ PUSH "no" DISCHARGE ]"#);
     fn pop_on_empty_is_emptiness() {
         let (_out, _err, result) = run("POP");
         assert!(matches!(result.unwrap_err(), AnalError::Emptiness { .. }));
+    }
+
+    // ── PREP / INSERT ────────────────────────────────────
+
+    #[test]
+    fn insert_without_prep_is_tightness() {
+        let (_, _, result) = run(r#"PUSH 1
+PUSH 2
+INSERT 1 99"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Tightness { .. }));
+    }
+
+    #[test]
+    fn insert_with_prep_places_value_at_depth() {
+        // Stack: [10, 20, 30] -> INSERT 2 15 -> [10, 15, 20, 30]
+        let (out, _, result) = run(r#"PUSH 10
+PUSH 20
+PUSH 30
+PREP
+INSERT 2 15
+DISCHARGE DISCHARGE DISCHARGE DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "30\n20\n15\n10\n");
+    }
+
+    #[test]
+    fn prep_is_one_shot() {
+        let (_, _, result) = run(r#"PUSH 1
+PREP
+INSERT 0 99
+INSERT 0 88"#);
+        // First INSERT consumes the PREP; second raises TIGHTNESS.
+        assert!(matches!(result.unwrap_err(), AnalError::Tightness { .. }));
+    }
+
+    #[test]
+    fn insert_depth_beyond_stack_is_penetration_depth() {
+        let (_, _, result) = run(r#"PUSH 1
+PREP
+INSERT 5 99"#);
+        assert!(matches!(
+            result.unwrap_err(),
+            AnalError::PenetrationDepth { .. }
+        ));
+    }
+
+    // ── CONSENT / EXTRACT / FLUSH ────────────────────────
+
+    #[test]
+    fn extract_without_consent_is_refusal() {
+        let (_, _, result) = run(r#"PUSH 1
+PUSH 2
+EXTRACT 0"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Refusal { .. }));
+    }
+
+    #[test]
+    fn extract_with_consent_removes_at_depth() {
+        // Stack: [10, 20, 30, 40] -> EXTRACT 2 -> [10, 30, 40]
+        let (out, _, result) = run(r#"PUSH 10
+PUSH 20
+PUSH 30
+PUSH 40
+CONSENT
+EXTRACT 2
+DISCHARGE DISCHARGE DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "40\n30\n10\n");
+    }
+
+    #[test]
+    fn consent_is_one_shot() {
+        let (_, _, result) = run(r#"PUSH 1
+PUSH 2
+CONSENT
+EXTRACT 0
+EXTRACT 0"#);
+        // First EXTRACT consumes CONSENT; second raises REFUSAL.
+        assert!(matches!(result.unwrap_err(), AnalError::Refusal { .. }));
+    }
+
+    #[test]
+    fn flush_without_consent_is_refusal() {
+        let (_, _, result) = run(r#"PUSH 1
+FLUSH"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Refusal { .. }));
+    }
+
+    #[test]
+    fn flush_with_consent_clears_stack() {
+        let (out, _, result) = run(r#"PUSH 1
+PUSH 2
+PUSH 3
+CONSENT
+FLUSH
+DEPTH
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "0\n");
+    }
+
+    // ── CLENCH / RELEASE / LOCKDOWN ──────────────────────
+
+    #[test]
+    fn release_on_unclenched_is_premature_release() {
+        let (_, _, result) = run("RELEASE");
+        assert!(matches!(
+            result.unwrap_err(),
+            AnalError::PrematureRelease { .. }
+        ));
+    }
+
+    #[test]
+    fn push_while_clenched_is_lockdown() {
+        let (_, _, result) = run(r#"CLENCH
+PUSH 1"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Lockdown { .. }));
+    }
+
+    #[test]
+    fn probe_and_expel_still_work_while_clenched() {
+        let (out, err, result) = run(r#"PUSH 42
+CLENCH
+PROBE
+EXPEL"#);
+        result.unwrap();
+        assert_eq!(err, "42\n");
+        assert_eq!(out, "42\n");
+    }
+
+    #[test]
+    fn release_unlocks_writes() {
+        let (out, _, result) = run(r#"PUSH 1
+CLENCH
+RELEASE
+PUSH 2
+ADD
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn nested_clenches_require_matching_releases() {
+        let (_, _, result) = run(r#"PUSH 1
+CLENCH
+CLENCH
+RELEASE
+PUSH 2"#);
+        // Two CLENCHes, one RELEASE — still clenched.
+        assert!(matches!(result.unwrap_err(), AnalError::Lockdown { .. }));
     }
 }
