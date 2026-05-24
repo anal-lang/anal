@@ -259,6 +259,12 @@ impl VM {
                 }
                 self.clench_depth -= 1;
             }
+            Op::Relax => {
+                // Idempotent — clears whatever was armed. Allowed during
+                // CLENCH because it doesn't touch the stack.
+                self.prep_armed = false;
+                self.consent_armed = false;
+            }
 
             // ── INSERT / EXTRACT / FLUSH ────────────────
             Op::Insert { depth, value } => {
@@ -817,6 +823,55 @@ ADD
 DISCHARGE"#);
         result.unwrap();
         assert_eq!(out, "3\n");
+    }
+
+    // ── RELAX ────────────────────────────────────────────
+
+    #[test]
+    fn relax_clears_armed_prep() {
+        let (_, _, result) = run(r#"PUSH 1
+PREP
+RELAX
+INSERT 0 99"#);
+        // RELAX cleared PREP, so INSERT raises TIGHTNESS.
+        assert!(matches!(result.unwrap_err(), AnalError::Tightness { .. }));
+    }
+
+    #[test]
+    fn relax_clears_armed_consent() {
+        let (_, _, result) = run(r#"PUSH 1
+CONSENT
+RELAX
+FLUSH"#);
+        // RELAX cleared CONSENT, so FLUSH raises REFUSAL.
+        assert!(matches!(result.unwrap_err(), AnalError::Refusal { .. }));
+    }
+
+    #[test]
+    fn relax_is_idempotent_on_unarmed_state() {
+        // RELAX on a clean state should just be a no-op.
+        let (out, _, result) = run(r#"RELAX
+RELAX
+PUSH 42
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "42\n");
+    }
+
+    #[test]
+    fn relax_allowed_during_clench() {
+        // RELAX doesn't touch the stack, so it's safe during a freeze.
+        let (out, _, result) = run(r#"PUSH 1
+CONSENT
+CLENCH
+RELAX
+RELEASE
+FLUSH"#);
+        // RELAX cleared CONSENT before the FLUSH, so FLUSH now raises REFUSAL.
+        assert!(
+            matches!(result.clone().unwrap_err(), AnalError::Refusal { .. }),
+            "got {result:?}, out={out:?}"
+        );
     }
 
     #[test]

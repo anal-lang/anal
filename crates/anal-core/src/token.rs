@@ -96,6 +96,8 @@ pub enum Token {
     Release,
     #[token("CONSENT")]
     Consent,
+    #[token("RELAX")]
+    Relax,
     #[token("EXPAND")]
     Expand,
     #[token("HOLD")]

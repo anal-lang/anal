@@ -68,6 +68,9 @@ pub enum Op {
     Clench,
     Release,
     Consent,
+    /// Clear any armed PREP / CONSENT flags. Idempotent.
+    /// ANAL forgives forgetting.
+    Relax,
     Expand(usize),
     Hold(Option<u64>),
     Resume,

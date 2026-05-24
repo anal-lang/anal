@@ -753,6 +753,13 @@ footer {
         </td>
       </tr>
       <tr>
+        <td><span class="cmd-kw">RELAX</span></td>
+        <td></td>
+        <td class="cmd-desc">Clear any armed PREP or CONSENT flag. <span class="req req-safe">always safe</span>
+          <div class="cmd-note">Idempotent: a no-op if neither flag is armed. Allowed during CLENCH since it does not touch the stack. Consent withdrawn before use is consent never given. ANAL forgives forgetting.</div>
+        </td>
+      </tr>
+      <tr>
         <td><span class="cmd-kw">EXPAND</span></td>
         <td><span class="cmd-arg">&lt;n&gt;</span></td>
         <td class="cmd-desc">Grow buffer capacity by n units. Call before you need it, not after.</td>

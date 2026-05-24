@@ -298,11 +298,12 @@ impl<'a> Parser<'a> {
                 self.emit(Op::Push(Value::Bloc(body)), span);
             }
 
-            // ── PREP / CONSENT / CLENCH / RELEASE ──────
+            // ── PREP / CONSENT / CLENCH / RELEASE / RELAX ──
             Token::Prep => self.emit(Op::Prep, span),
             Token::Consent => self.emit(Op::Consent, span),
             Token::Clench => self.emit(Op::Clench, span),
             Token::Release => self.emit(Op::Release, span),
+            Token::Relax => self.emit(Op::Relax, span),
 
             // ── FLUSH ──────────────────────────────────
             Token::Flush => self.emit(Op::Flush, span),
@@ -528,6 +529,7 @@ fn is_known_keyword(uppercased: &str) -> bool {
             | "CLENCH"
             | "RELEASE"
             | "CONSENT"
+            | "RELAX"
             | "EXPAND"
             | "HOLD"
             | "RESUME"
