@@ -11,7 +11,7 @@
 [![CI](https://github.com/1xn/anal/actions/workflows/ci.yml/badge.svg)](https://github.com/1xn/anal/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/1xn/anal?label=release)](https://github.com/1xn/anal/releases/latest)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-informational)](LICENSE)
-[![Spec: v0.1](https://img.shields.io/badge/spec-v0.1-blue)](docs/index.html)
+[![Spec: v0.1](https://img.shields.io/badge/spec-v0.1-blue)](https://1xn.github.io/anal/)
 
 > *Push-only by design, consent-enforced by default, append-oriented by conviction.*
 
@@ -123,7 +123,7 @@ anal probe examples/consent_dialog.anal
 
 ## Status
 
-**v0.1 has shipped.** The reference implementation in Rust runs every example in this repository end-to-end. The [language specification](docs/index.html) documents what the v0.1 interpreter accepts.
+**v0.1 has shipped.** The reference implementation in Rust runs every example in this repository end-to-end. The [language specification](https://1xn.github.io/anal/) documents what the v0.1 interpreter accepts.
 
 What's in v0.1: stack ops (`PUSH`, `POP`, `DUP`, `SWAP`, `DEPTH`, `PROBE`), arithmetic, comparison, control flow (`IF_TIGHT`, `IF_LOOSE`, `DILATE`/`CONSTRICT`, `ABORT`), I/O (`EXPEL`, `DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `INSERT`, `EXTRACT`, `FLUSH`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, and ariadne-rendered diagnostics. `EXPAND` / `HOLD` / `RESUME` are accepted by the parser but are currently no-ops past argument validation.
 
@@ -136,7 +136,7 @@ What is not in v0.1: a module system, a type system beyond the built-in scalars,
 - **v0.1** ✓ shipped — reference interpreter, full spec coverage of the core ops, install pipeline.
 - **v0.2** — module system, real type errors, `EXPAND` / `HOLD` / `RESUME` lifted out of no-op status.
 - **v1.0** — `analc`, the self-hosted compiler. ANAL compiling ANAL into `.sph` bytecode.
-- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§9](docs/index.html#suppository); neither shipped.
+- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§9](https://1xn.github.io/anal/#suppository); neither shipped.
 
 No timelines. ANAL does not rush.
 
@@ -166,7 +166,7 @@ Proposals go through the RFC PASSAGE process. The PASSAGE process typically take
 It isn't. It is precise. Politeness and precision are easily confused.
 
 **Can I write a linter / formatter / language server?**
-Yes. The reference grammar is in [`docs/index.html`](docs/index.html); the lexer and parser live in [`crates/anal-core`](crates/anal-core). Tooling is welcome. It still cannot be submitted as a pull request.
+Yes. The reference grammar is in the [specification](https://1xn.github.io/anal/); the lexer and parser live in [`crates/anal-core`](crates/anal-core). Tooling is welcome. It still cannot be submitted as a pull request.
 
 **Will the compiler ever be written in ANAL itself?**
 That is the eventual goal — a self-hosted `analc` that emits `.sph` bytecode. Until then, the reference compiler is Rust and reserves the [`ast`](crates/anal-core/src/ast.rs) and [`compiler`](crates/anal-core/src/compiler.rs) namespaces for the bootstrap.

@@ -130,7 +130,7 @@ jobs:
           body: |
             ANAL ${{ github.ref_name }}.
 
-            Data arrives, in order, with consent. See the [specification](https://github.com/1xn/anal/blob/${{ github.ref_name }}/docs/index.html) for what changed.
+            Data arrives, in order, with consent. See the [specification](https://1xn.github.io/anal/) for what changed.
 
             ## Install
 
