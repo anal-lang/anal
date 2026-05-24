@@ -155,41 +155,48 @@ impl<'a> Parser<'a> {
     }
 
     /// Header form: `ANAL "<name>" VERSION <int>` followed by any number of
-    /// `INGEST "<path>"` declarations. Both are parsed-and-ignored at v0.1.
+    /// `INGEST "<path>"` declarations (module imports — parsed-and-ignored
+    /// at v0.1).
+    ///
+    /// `INGEST` is *only* treated as a header import when an `ANAL` line
+    /// precedes it. A bare `INGEST "path"` at the top of a file is a body
+    /// statement that reads the named file at runtime.
     fn parse_header_and_ingests(&mut self) -> Result<(), AnalError> {
-        if matches!(self.peek_kind(), Some(Token::Anal)) {
-            let _anal = self.advance();
-            let name = self.advance().ok_or_else(|| AnalError::Parse {
-                message: "ANAL header expects a string name".into(),
-                span: Span::dummy(),
-            })?;
-            if !matches!(name.node, Token::Str(_)) {
-                return Err(AnalError::Parse {
-                    message: "ANAL header expects a string name".into(),
-                    span: name.span,
-                });
-            }
-            let ver_kw = self.advance().ok_or_else(|| AnalError::Parse {
-                message: "ANAL header expects VERSION".into(),
-                span: name.span,
-            })?;
-            if !matches!(ver_kw.node, Token::Version) {
-                return Err(AnalError::Parse {
-                    message: "ANAL header expects VERSION".into(),
-                    span: ver_kw.span,
-                });
-            }
-            let ver_num = self.advance().ok_or_else(|| AnalError::Parse {
-                message: "VERSION expects an integer".into(),
-                span: ver_kw.span,
-            })?;
-            if !matches!(ver_num.node, Token::Int(_)) {
-                return Err(AnalError::Parse {
-                    message: "VERSION expects an integer".into(),
-                    span: ver_num.span,
-                });
-            }
+        if !matches!(self.peek_kind(), Some(Token::Anal)) {
+            return Ok(());
         }
+        let _anal = self.advance();
+        let name = self.advance().ok_or_else(|| AnalError::Parse {
+            message: "ANAL header expects a string name".into(),
+            span: Span::dummy(),
+        })?;
+        if !matches!(name.node, Token::Str(_)) {
+            return Err(AnalError::Parse {
+                message: "ANAL header expects a string name".into(),
+                span: name.span,
+            });
+        }
+        let ver_kw = self.advance().ok_or_else(|| AnalError::Parse {
+            message: "ANAL header expects VERSION".into(),
+            span: name.span,
+        })?;
+        if !matches!(ver_kw.node, Token::Version) {
+            return Err(AnalError::Parse {
+                message: "ANAL header expects VERSION".into(),
+                span: ver_kw.span,
+            });
+        }
+        let ver_num = self.advance().ok_or_else(|| AnalError::Parse {
+            message: "VERSION expects an integer".into(),
+            span: ver_kw.span,
+        })?;
+        if !matches!(ver_num.node, Token::Int(_)) {
+            return Err(AnalError::Parse {
+                message: "VERSION expects an integer".into(),
+                span: ver_num.span,
+            });
+        }
+
         while matches!(self.peek_kind(), Some(Token::Ingest)) {
             let ingest = self.advance().unwrap();
             let path = self.advance().ok_or_else(|| AnalError::Parse {
@@ -350,8 +357,23 @@ impl<'a> Parser<'a> {
                 });
             }
 
-            // ── Header keywords appearing mid-program ──
-            Token::Anal | Token::Version | Token::Ingest => {
+            // ── INGEST "path" — body form reads a file ─
+            Token::Ingest => {
+                let path = self.parse_string_operand("INGEST path", span)?;
+                self.emit(Op::IngestFile(path), span);
+            }
+
+            // ── EVACUATE "path" — write top of stack to file ──
+            Token::Evacuate => {
+                let path = self.parse_string_operand("EVACUATE path", span)?;
+                self.emit(Op::Evacuate(path), span);
+            }
+
+            // ── RECEIVE — read one line from stdin ─────
+            Token::Receive => self.emit(Op::Receive, span),
+
+            // ── Header-only keywords appearing mid-program ──
+            Token::Anal | Token::Version => {
                 return Err(AnalError::Parse {
                     message: "header keywords are only valid before the body".into(),
                     span,
@@ -359,7 +381,7 @@ impl<'a> Parser<'a> {
             }
 
             // ── Spec'd but not yet supported in v0.1 ───
-            other @ (Token::Hold | Token::Resume | Token::Receive | Token::Evacuate) => {
+            other @ (Token::Hold | Token::Resume) => {
                 return Err(AnalError::Parse {
                     message: format!("{other:?} is not yet implemented"),
                     span,
@@ -375,6 +397,20 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    fn parse_string_operand(&mut self, what: &str, kw_span: Span) -> Result<String, AnalError> {
+        let tok = self.advance().ok_or_else(|| AnalError::Parse {
+            message: format!("{what} expects a string literal"),
+            span: kw_span,
+        })?;
+        match tok.node {
+            Token::Str(s) => Ok(s),
+            other => Err(AnalError::Parse {
+                message: format!("{what} expects a string literal, found {other:?}"),
+                span: tok.span,
+            }),
+        }
     }
 
     fn parse_uint_operand(&mut self, what: &str, kw_span: Span) -> Result<usize, AnalError> {

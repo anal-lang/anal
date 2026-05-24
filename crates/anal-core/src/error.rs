@@ -38,7 +38,7 @@ pub enum AnalError {
     #[error("REJECTION: expected {expected}, found {found}")]
     Rejection {
         expected: &'static str,
-        found: &'static str,
+        found: String,
         span: Span,
     },
 

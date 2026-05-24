@@ -1,0 +1,10 @@
+; echo.anal — read one line from stdin, write it back to stdout.
+;
+;   anal run examples/echo.anal
+;   hello there         ← typed by you
+;   hello there         ← echoed back
+
+ANAL "echo" VERSION 1
+
+RECEIVE
+DISCHARGE

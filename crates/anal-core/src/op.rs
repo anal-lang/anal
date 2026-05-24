@@ -75,11 +75,13 @@ pub enum Op {
     // ── I/O ───────────────────────────────────────────
     Expel,
     Discharge,
+    /// Read one line from stdin and push it as a STRING (newline stripped).
     Receive,
-    /// Read a file at path on stack and push its contents.
-    IngestFile,
-    /// Write top of stack to the path on stack below it. Requires CONSENT.
-    Evacuate,
+    /// Read the file at the given path and push its contents as a STRING.
+    IngestFile(String),
+    /// Write the top of stack to the given path. Does not POP. Overwrites.
+    /// Requires CONSENT if the file already exists.
+    Evacuate(String),
 
     // ── Flow control (jumps are resolved offsets) ─────
     Jump(usize),

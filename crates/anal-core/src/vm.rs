@@ -6,7 +6,8 @@
 //! channel), `EXPEL` and `DISCHARGE` write to stdout.
 
 use std::cmp::Ordering;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::error::AnalError;
@@ -58,30 +59,34 @@ impl VM {
         }
     }
 
-    /// Execute against the process stdout / stderr.
+    /// Execute against the process stdin / stdout / stderr.
     pub fn execute(&mut self, program: &Program) -> Result<(), AnalError> {
+        let stdin = io::stdin();
         let stdout = io::stdout();
         let stderr = io::stderr();
+        let mut input = BufReader::new(stdin.lock());
         let mut out = stdout.lock();
         let mut err = stderr.lock();
-        self.run(program, &mut out, &mut err)
+        self.run(program, &mut input, &mut out, &mut err)
     }
 
     /// Execute with explicit I/O sinks — useful for tests.
     pub fn run<W1: Write, W2: Write>(
         &mut self,
         program: &Program,
+        input: &mut dyn BufRead,
         out: &mut W1,
         err: &mut W2,
     ) -> Result<(), AnalError> {
         let main = Rc::clone(&program.main);
-        self.run_block(&main, program, out, err)
+        self.run_block(&main, program, input, out, err)
     }
 
     fn run_block<W1: Write, W2: Write>(
         &mut self,
         code: &[Instr],
         program: &Program,
+        input: &mut dyn BufRead,
         out: &mut W1,
         err: &mut W2,
     ) -> Result<(), AnalError> {
@@ -90,7 +95,7 @@ impl VM {
             let instr = &code[pc];
             let span = instr.span;
             pc += 1;
-            match self.step(&instr.op, span, program, out, err)? {
+            match self.step(&instr.op, span, program, input, out, err)? {
                 Flow::Continue => {}
                 Flow::Jump(target) => pc = target,
                 Flow::Return => return Ok(()),
@@ -104,6 +109,7 @@ impl VM {
         op: &Op,
         span: Span,
         program: &Program,
+        input: &mut dyn BufRead,
         out: &mut W1,
         err: &mut W2,
     ) -> Result<Flow, AnalError> {
@@ -210,7 +216,7 @@ impl VM {
                         span,
                     })?
                     .clone();
-                self.run_block(&passage, program, out, err)?;
+                self.run_block(&passage, program, input, out, err)?;
             }
             Op::Return => return Ok(Flow::Return),
 
@@ -286,8 +292,70 @@ impl VM {
                 self.check_unclenched("EXPAND", span)?;
             }
 
+            // ── INGEST / EVACUATE / RECEIVE ─────────────
+            Op::IngestFile(path) => {
+                self.check_unclenched("INGEST", span)?;
+                let contents =
+                    std::fs::read_to_string(Path::new(path)).map_err(|e| AnalError::Rejection {
+                        expected: "readable file",
+                        found: format!("INGEST: {e}"),
+                        span,
+                    })?;
+                self.stack.push(Value::Str(Rc::from(contents.as_str())));
+            }
+            Op::Evacuate(path) => {
+                let content = match self.peek("EVACUATE", span)? {
+                    Value::Str(s) => Rc::clone(s),
+                    other => {
+                        return Err(AnalError::Rejection {
+                            expected: "STRING",
+                            found: other.type_name().into(),
+                            span,
+                        });
+                    }
+                };
+                let p = Path::new(path);
+                if p.exists() {
+                    if !self.consent_armed {
+                        return Err(AnalError::Refusal {
+                            op: "EVACUATE",
+                            span,
+                        });
+                    }
+                    self.consent_armed = false;
+                }
+                std::fs::write(p, content.as_bytes()).map_err(|e| AnalError::Rejection {
+                    expected: "writable file path",
+                    found: format!("EVACUATE: {e}"),
+                    span,
+                })?;
+            }
+            Op::Receive => {
+                self.check_unclenched("RECEIVE", span)?;
+                let mut line = String::new();
+                let n = input
+                    .read_line(&mut line)
+                    .map_err(|e| AnalError::Rejection {
+                        expected: "readable stdin",
+                        found: format!("RECEIVE: {e}"),
+                        span,
+                    })?;
+                if n == 0 {
+                    return Err(AnalError::Rejection {
+                        expected: "input line",
+                        found: "EOF".into(),
+                        span,
+                    });
+                }
+                // Strip trailing newline(s).
+                while matches!(line.chars().last(), Some('\n' | '\r')) {
+                    line.pop();
+                }
+                self.stack.push(Value::Str(Rc::from(line.as_str())));
+            }
+
             // ── still pending in v0.2 ───────────────────
-            Op::Hold(_) | Op::Resume | Op::Receive | Op::IngestFile | Op::Evacuate => {
+            Op::Hold(_) | Op::Resume => {
                 return Err(AnalError::Parse {
                     message: format!("VM: op {op:?} not yet implemented in v0.1"),
                     span,
@@ -330,7 +398,7 @@ impl VM {
             _ => {
                 return Err(AnalError::Rejection {
                     expected: "matching numeric types",
-                    found: a.type_name(),
+                    found: a.type_name().into(),
                     span,
                 });
             }
@@ -347,7 +415,7 @@ impl VM {
             (Value::Int(_), Value::Int(0)) => {
                 return Err(AnalError::Rejection {
                     expected: "non-zero divisor",
-                    found: "INT(0)",
+                    found: "INT(0)".into(),
                     span,
                 });
             }
@@ -356,7 +424,7 @@ impl VM {
             _ => {
                 return Err(AnalError::Rejection {
                     expected: "matching numeric types",
-                    found: a.type_name(),
+                    found: a.type_name().into(),
                     span,
                 });
             }
@@ -373,7 +441,7 @@ impl VM {
             (Value::Int(_), Value::Int(0)) => {
                 return Err(AnalError::Rejection {
                     expected: "non-zero divisor",
-                    found: "INT(0)",
+                    found: "INT(0)".into(),
                     span,
                 });
             }
@@ -382,7 +450,7 @@ impl VM {
             _ => {
                 return Err(AnalError::Rejection {
                     expected: "matching numeric types",
-                    found: a.type_name(),
+                    found: a.type_name().into(),
                     span,
                 });
             }
@@ -404,13 +472,13 @@ impl VM {
             (Value::Int(x), Value::Int(y)) => x.cmp(y),
             (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).ok_or(AnalError::Rejection {
                 expected: "ordered FLOAT",
-                found: "NaN",
+                found: "NaN".into(),
                 span,
             })?,
             _ => {
                 return Err(AnalError::Rejection {
                     expected: "matching numeric types",
-                    found: a.type_name(),
+                    found: a.type_name().into(),
                     span,
                 });
             }
@@ -428,13 +496,13 @@ impl VM {
             Value::Bool(b) => *b as i64,
             Value::Str(s) => s.parse::<i64>().map_err(|_| AnalError::Rejection {
                 expected: "INT-parseable STRING",
-                found: "non-numeric STRING",
+                found: "non-numeric STRING".into(),
                 span,
             })?,
             _ => {
                 return Err(AnalError::Rejection {
                     expected: "INT-convertible value",
-                    found: v.type_name(),
+                    found: v.type_name().into(),
                     span,
                 });
             }
@@ -458,13 +526,13 @@ impl VM {
             }
             Value::Str(s) => s.parse::<f64>().map_err(|_| AnalError::Rejection {
                 expected: "FLOAT-parseable STRING",
-                found: "non-numeric STRING",
+                found: "non-numeric STRING".into(),
                 span,
             })?,
             _ => {
                 return Err(AnalError::Rejection {
                     expected: "FLOAT-convertible value",
-                    found: v.type_name(),
+                    found: v.type_name().into(),
                     span,
                 });
             }
@@ -495,14 +563,19 @@ mod tests {
     use crate::parser::compile;
 
     fn run(src: &str) -> (String, String, Result<(), AnalError>) {
+        run_with_input(src, b"")
+    }
+
+    fn run_with_input(src: &str, input: &[u8]) -> (String, String, Result<(), AnalError>) {
         let program = match compile(src) {
             Ok(p) => p,
             Err(e) => return (String::new(), String::new(), Err(e)),
         };
+        let mut input = std::io::Cursor::new(input);
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut vm = VM::new();
-        let result = vm.run(&program, &mut out, &mut err);
+        let result = vm.run(&program, &mut input, &mut out, &mut err);
         (
             String::from_utf8(out).unwrap(),
             String::from_utf8(err).unwrap(),
@@ -792,5 +865,93 @@ PUSH 2
 DISCHARGE"#);
         result.unwrap();
         assert_eq!(out, "1\n"); // PUSH 2 / DISCHARGE never run
+    }
+
+    // ── RECEIVE / INGEST / EVACUATE ──────────────────────
+
+    #[test]
+    fn receive_reads_one_line_from_stdin() {
+        let (out, _, result) = run_with_input("RECEIVE\nDISCHARGE", b"hello world\n");
+        result.unwrap();
+        assert_eq!(out, "hello world\n");
+    }
+
+    #[test]
+    fn receive_strips_crlf() {
+        let (out, _, result) = run_with_input("RECEIVE\nDISCHARGE", b"hi\r\n");
+        result.unwrap();
+        assert_eq!(out, "hi\n");
+    }
+
+    #[test]
+    fn receive_on_eof_raises_rejection() {
+        let (_, _, result) = run_with_input("RECEIVE", b"");
+        assert!(matches!(result.unwrap_err(), AnalError::Rejection { .. }));
+    }
+
+    #[test]
+    fn ingest_reads_file_contents() {
+        let path =
+            std::env::temp_dir().join(format!("anal_test_ingest_{}.txt", std::process::id()));
+        std::fs::write(&path, "file contents here").unwrap();
+        let src = format!(
+            "INGEST \"{}\"\nDISCHARGE",
+            path.display().to_string().replace('\\', "\\\\")
+        );
+        let (out, _, result) = run(&src);
+        let _ = std::fs::remove_file(&path);
+        result.unwrap();
+        assert_eq!(out, "file contents here\n");
+    }
+
+    #[test]
+    fn ingest_missing_file_raises_rejection() {
+        let (_, _, result) = run(r#"INGEST "definitely_not_a_real_path_12345.txt""#);
+        assert!(matches!(result.unwrap_err(), AnalError::Rejection { .. }));
+    }
+
+    #[test]
+    fn evacuate_writes_new_file_without_consent() {
+        let path = std::env::temp_dir().join(format!("anal_test_evac_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let src = format!(
+            "PUSH \"hello evac\"\nEVACUATE \"{}\"",
+            path.display().to_string().replace('\\', "\\\\")
+        );
+        let (_, _, result) = run(&src);
+        result.unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(contents, "hello evac");
+    }
+
+    #[test]
+    fn evacuate_overwrite_without_consent_is_refusal() {
+        let path =
+            std::env::temp_dir().join(format!("anal_test_evac_ref_{}.txt", std::process::id()));
+        std::fs::write(&path, "existing").unwrap();
+        let src = format!(
+            "PUSH \"would overwrite\"\nEVACUATE \"{}\"",
+            path.display().to_string().replace('\\', "\\\\")
+        );
+        let (_, _, result) = run(&src);
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(result.unwrap_err(), AnalError::Refusal { .. }));
+    }
+
+    #[test]
+    fn evacuate_overwrite_with_consent_succeeds() {
+        let path =
+            std::env::temp_dir().join(format!("anal_test_evac_consent_{}.txt", std::process::id()));
+        std::fs::write(&path, "old contents").unwrap();
+        let src = format!(
+            "PUSH \"new contents\"\nCONSENT\nEVACUATE \"{}\"",
+            path.display().to_string().replace('\\', "\\\\")
+        );
+        let (_, _, result) = run(&src);
+        result.unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(contents, "new contents");
     }
 }
