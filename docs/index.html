@@ -953,12 +953,108 @@ footer {
       <tr>
         <td><span class="cmd-kw">BLOC</span></td>
         <td class="cmd-arg">[ ... ]</td>
-        <td class="cmd-desc">A quoted block of code. Pushed as a value, executed with ENTER. ANAL's approach to first-class functions.</td>
+        <td class="cmd-desc">A quoted block of code. Square brackets push the enclosed instructions as a single value; the block does not execute until consumed by <code>ENTER</code>, <code>IF_TIGHT</code>, or <code>IF_LOOSE</code>. ANAL's approach to first-class functions.</td>
       </tr>
     </tbody>
   </table>
 
-  <p>Conversion is explicit: <code>TO_INT</code>, <code>TO_FLOAT</code>, <code>TO_STRING</code>. Implicit conversion raises REJECTION. You asked for this.</p>
+  <h2>Arithmetic</h2>
+  <p>All arithmetic ops POP their operands and PUSH a single result. Operand order on the stack: the second-to-top is the left-hand side, the top is the right-hand side. Mixed INT/FLOAT raises REJECTION — convert first.</p>
+
+  <table class="cmd-table">
+    <thead>
+      <tr>
+        <th style="width:160px">Command</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cmd-kw">ADD</span></td>
+        <td class="cmd-desc">PUSH (a + b). Strings concatenate.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">SUB</span></td>
+        <td class="cmd-desc">PUSH (a − b). Numeric operands only.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">MUL</span></td>
+        <td class="cmd-desc">PUSH (a × b). Numeric operands only.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">DIV</span></td>
+        <td class="cmd-desc">PUSH (a ÷ b). Integer division for INTs; raises REJECTION on divide-by-zero.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">MOD</span></td>
+        <td class="cmd-desc">PUSH (a mod b). INT operands only.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Comparison</h2>
+  <p>All comparison ops POP two operands and PUSH a BOOL. Operand order matches arithmetic: second-to-top is the left, top is the right.</p>
+
+  <table class="cmd-table">
+    <thead>
+      <tr>
+        <th style="width:160px">Command</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cmd-kw">EQ</span></td>
+        <td class="cmd-desc">PUSH TRUE if a equals b. Type-strict: <code>42</code> and <code>42.0</code> are not equal. Convert first.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">LT</span></td>
+        <td class="cmd-desc">PUSH TRUE if a &lt; b.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">GT</span></td>
+        <td class="cmd-desc">PUSH TRUE if a &gt; b.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">LTE</span></td>
+        <td class="cmd-desc">PUSH TRUE if a ≤ b.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">GTE</span></td>
+        <td class="cmd-desc">PUSH TRUE if a ≥ b.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">NOT</span></td>
+        <td class="cmd-desc">POP one BOOL, PUSH its negation. The only unary operator in the family.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Conversion</h2>
+  <p>Conversion is always explicit. ANAL will not coerce. Implicit conversion raises REJECTION; you asked for this.</p>
+
+  <table class="cmd-table">
+    <thead>
+      <tr>
+        <th style="width:160px">Command</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cmd-kw">TO_INT</span></td>
+        <td class="cmd-desc">POP a value, PUSH its INT form. FLOAT truncates toward zero; STRING must parse cleanly or REJECTION.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">TO_FLOAT</span></td>
+        <td class="cmd-desc">POP a value, PUSH its FLOAT form. INT promotes; STRING must parse cleanly.</td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">TO_STRING</span></td>
+        <td class="cmd-desc">POP a value, PUSH its STRING form. Always succeeds.</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
 
 <!-- §8 Errors -->
