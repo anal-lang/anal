@@ -177,6 +177,7 @@ That is the eventual goal — a self-hosted `analc` that emits `.sph` bytecode. 
 
 ANAL does not accept pull requests. This is not a bug. All changes flow in one direction.
 
+- **Pull requests** are closed automatically on arrival. The rejection is polite. The closure is not negotiable.
 - **Patches** are submitted by email.
 - **Significant changes** go through the **RFC PASSAGE** process. RFCs are PUSHed to the repository; the core team PROBEs them, deliberates, and either INSERTs them into the roadmap or EXTRACTs them with a written explanation. Acceptance requires CONSENT of a majority of core maintainers.
 
