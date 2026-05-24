@@ -10,13 +10,12 @@ use std::io::{self, Write};
 use std::rc::Rc;
 
 use crate::error::AnalError;
-use crate::op::{Instr, Op};
+use crate::op::{Instr, Op, Program};
 use crate::token::Span;
 use crate::value::Value;
 
 pub struct VM {
     stack: Vec<Value>,
-    pc: usize,
     /// `PREP` arms a one-shot readiness flag for the next `INSERT`.
     /// `INSERT` clears it; calling `INSERT` without it raises `TIGHTNESS`.
     prep_armed: bool,
@@ -27,6 +26,19 @@ pub struct VM {
     /// Number of unmatched `CLENCH`es. While non-zero, write ops raise
     /// `LOCKDOWN`. `PROBE` and `EXPEL` remain available.
     clench_depth: u32,
+    /// Set by `ABORT`. Causes all currently-executing blocks (including
+    /// nested PASSAGE calls) to short-circuit back to the top.
+    aborted: bool,
+}
+
+/// How a single instruction influences the surrounding block's PC.
+enum Flow {
+    /// Continue to the next instruction.
+    Continue,
+    /// Set the PC to this absolute index within the current block.
+    Jump(usize),
+    /// Stop executing the current block and unwind one frame.
+    Return,
 }
 
 impl Default for VM {
@@ -39,34 +51,50 @@ impl VM {
     pub fn new() -> Self {
         Self {
             stack: Vec::new(),
-            pc: 0,
             prep_armed: false,
             consent_armed: false,
             clench_depth: 0,
+            aborted: false,
         }
     }
 
     /// Execute against the process stdout / stderr.
-    pub fn execute(&mut self, code: &[Instr]) -> Result<(), AnalError> {
+    pub fn execute(&mut self, program: &Program) -> Result<(), AnalError> {
         let stdout = io::stdout();
         let stderr = io::stderr();
         let mut out = stdout.lock();
         let mut err = stderr.lock();
-        self.run(code, &mut out, &mut err)
+        self.run(program, &mut out, &mut err)
     }
 
     /// Execute with explicit I/O sinks — useful for tests.
     pub fn run<W1: Write, W2: Write>(
         &mut self,
-        code: &[Instr],
+        program: &Program,
         out: &mut W1,
         err: &mut W2,
     ) -> Result<(), AnalError> {
-        while self.pc < code.len() {
-            let instr = &code[self.pc];
+        let main = Rc::clone(&program.main);
+        self.run_block(&main, program, out, err)
+    }
+
+    fn run_block<W1: Write, W2: Write>(
+        &mut self,
+        code: &[Instr],
+        program: &Program,
+        out: &mut W1,
+        err: &mut W2,
+    ) -> Result<(), AnalError> {
+        let mut pc = 0;
+        while pc < code.len() && !self.aborted {
+            let instr = &code[pc];
             let span = instr.span;
-            self.pc += 1;
-            self.step(&instr.op, span, out, err)?;
+            pc += 1;
+            match self.step(&instr.op, span, program, out, err)? {
+                Flow::Continue => {}
+                Flow::Jump(target) => pc = target,
+                Flow::Return => return Ok(()),
+            }
         }
         Ok(())
     }
@@ -75,9 +103,10 @@ impl VM {
         &mut self,
         op: &Op,
         span: Span,
+        program: &Program,
         out: &mut W1,
         err: &mut W2,
-    ) -> Result<(), AnalError> {
+    ) -> Result<Flow, AnalError> {
         match op {
             // ── stack ───────────────────────────────────
             Op::Push(v) => {
@@ -151,24 +180,39 @@ impl VM {
             Op::ToStr => self.convert_to_str(span)?,
 
             // ── flow control ────────────────────────────
-            Op::Jump(target) => self.pc = *target,
+            Op::Jump(target) => return Ok(Flow::Jump(*target)),
             Op::JumpIfFalsy(target) => {
                 self.check_unclenched("DILATE/IF_TIGHT", span)?;
                 let cond = self.pop("DILATE/IF_TIGHT", span)?;
                 if !cond.is_truthy() {
-                    self.pc = *target;
+                    return Ok(Flow::Jump(*target));
                 }
             }
             Op::JumpIfTruthy(target) => {
                 self.check_unclenched("CONSTRICT/IF_LOOSE", span)?;
                 let cond = self.pop("CONSTRICT/IF_LOOSE", span)?;
                 if cond.is_truthy() {
-                    self.pc = *target;
+                    return Ok(Flow::Jump(*target));
                 }
             }
             Op::Abort => {
-                self.pc = usize::MAX;
+                self.aborted = true;
+                return Ok(Flow::Return);
             }
+
+            // ── PASSAGE call/return ─────────────────────
+            Op::Enter(name) => {
+                let passage = program
+                    .passages
+                    .get(name)
+                    .ok_or_else(|| AnalError::PassageNotFound {
+                        name: name.clone(),
+                        span,
+                    })?
+                    .clone();
+                self.run_block(&passage, program, out, err)?;
+            }
+            Op::Return => return Ok(Flow::Return),
 
             // ── PREP / CONSENT / CLENCH / RELEASE ───────
             Op::Prep => {
@@ -243,20 +287,14 @@ impl VM {
             }
 
             // ── still pending in v0.2 ───────────────────
-            Op::Hold(_)
-            | Op::Resume
-            | Op::Receive
-            | Op::IngestFile
-            | Op::Evacuate
-            | Op::Enter(_)
-            | Op::Return => {
+            Op::Hold(_) | Op::Resume | Op::Receive | Op::IngestFile | Op::Evacuate => {
                 return Err(AnalError::Parse {
                     message: format!("VM: op {op:?} not yet implemented in v0.1"),
                     span,
                 });
             }
         }
-        Ok(())
+        Ok(Flow::Continue)
     }
 
     /// Raise `LOCKDOWN` if the stack is currently clenched.
@@ -457,14 +495,14 @@ mod tests {
     use crate::parser::compile;
 
     fn run(src: &str) -> (String, String, Result<(), AnalError>) {
-        let code = match compile(src) {
-            Ok(c) => c,
+        let program = match compile(src) {
+            Ok(p) => p,
             Err(e) => return (String::new(), String::new(), Err(e)),
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut vm = VM::new();
-        let result = vm.run(&code, &mut out, &mut err);
+        let result = vm.run(&program, &mut out, &mut err);
         (
             String::from_utf8(out).unwrap(),
             String::from_utf8(err).unwrap(),
@@ -685,5 +723,74 @@ RELEASE
 PUSH 2"#);
         // Two CLENCHes, one RELEASE — still clenched.
         assert!(matches!(result.unwrap_err(), AnalError::Lockdown { .. }));
+    }
+
+    // ── PASSAGE / ENTER / EXIT ───────────────────────────
+
+    #[test]
+    fn passage_call_returns_to_caller() {
+        let (out, _, result) = run(r#"PASSAGE square:
+  DUP
+  MUL
+EXIT
+
+PUSH 9
+ENTER square
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "81\n");
+    }
+
+    #[test]
+    fn passage_can_be_called_multiple_times() {
+        let (out, _, result) = run(r#"PASSAGE double:
+  PUSH 2
+  MUL
+EXIT
+
+PUSH 3
+ENTER double
+ENTER double
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "12\n");
+    }
+
+    #[test]
+    fn passage_not_found_raises_error() {
+        let (_, _, result) = run("ENTER nonexistent");
+        assert!(matches!(
+            result.unwrap_err(),
+            AnalError::PassageNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn passages_share_the_global_stack() {
+        // Passage adds 100 to whatever's on top, then we DISCHARGE twice
+        // to confirm the rest of the stack remains accessible.
+        let (out, _, result) = run(r#"PASSAGE add100:
+  PUSH 100
+  ADD
+EXIT
+
+PUSH 7
+PUSH 5
+ENTER add100
+DISCHARGE
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "105\n7\n");
+    }
+
+    #[test]
+    fn abort_stops_execution_immediately() {
+        let (out, _, result) = run(r#"PUSH 1
+DISCHARGE
+ABORT
+PUSH 2
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "1\n"); // PUSH 2 / DISCHARGE never run
     }
 }

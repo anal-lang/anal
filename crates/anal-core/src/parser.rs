@@ -10,25 +10,34 @@
 //! delimiter only — proper `BLOC`-as-value semantics arrive with `PASSAGE`
 //! support in v0.2.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::error::AnalError;
-use crate::op::{Instr, Op};
+use crate::op::{Instr, Op, Program};
 use crate::token::{Span, Spanned, Token};
 use crate::value::Value;
 
-/// Lex + parse a complete ANAL source string into bytecode.
-pub fn compile(source: &str) -> Result<Vec<Instr>, AnalError> {
+/// Lex + parse a complete ANAL source string into a compiled [`Program`].
+pub fn compile(source: &str) -> Result<Program, AnalError> {
     let tokens = crate::lexer::lex(source)?;
     let mut p = Parser::new(&tokens);
     p.parse_program()?;
-    Ok(p.instrs)
+    Ok(Program {
+        main: Rc::from(p.instrs.into_boxed_slice()),
+        passages: p
+            .passages
+            .into_iter()
+            .map(|(name, body)| (name, Rc::from(body.into_boxed_slice())))
+            .collect(),
+    })
 }
 
 struct Parser<'a> {
     tokens: &'a [Spanned<Token>],
     pos: usize,
     instrs: Vec<Instr>,
+    passages: HashMap<String, Vec<Instr>>,
     /// (address of JumpIfFalsy to patch, address of body start).
     loop_stack: Vec<(usize, usize)>,
 }
@@ -39,6 +48,7 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             instrs: Vec::new(),
+            passages: HashMap::new(),
             loop_stack: Vec::new(),
         }
     }
@@ -61,6 +71,9 @@ impl<'a> Parser<'a> {
 
     fn parse_program(&mut self) -> Result<(), AnalError> {
         self.parse_header_and_ingests()?;
+        while matches!(self.peek_kind(), Some(Token::Passage)) {
+            self.parse_passage()?;
+        }
         while self.peek_kind().is_some() {
             self.parse_statement()?;
         }
@@ -69,6 +82,75 @@ impl<'a> Parser<'a> {
                 span: self.instrs[*jump_addr].span,
             });
         }
+        Ok(())
+    }
+
+    /// Parse a `PASSAGE name: ... EXIT` declaration. The body is compiled
+    /// into its own instruction stream, terminated with `Return`, and
+    /// stored in the passages table for the VM to call into.
+    fn parse_passage(&mut self) -> Result<(), AnalError> {
+        let passage_kw = self.advance().expect("caller checked PASSAGE");
+        let passage_span = passage_kw.span;
+
+        let name_tok = self.advance().ok_or_else(|| AnalError::Parse {
+            message: "PASSAGE expects a name".into(),
+            span: passage_span,
+        })?;
+        let name = match name_tok.node {
+            Token::Ident(n) => n,
+            other => {
+                return Err(AnalError::Parse {
+                    message: format!("PASSAGE expects an identifier name, found {other:?}"),
+                    span: name_tok.span,
+                });
+            }
+        };
+
+        let colon = self.advance().ok_or_else(|| AnalError::Parse {
+            message: "PASSAGE name must be followed by `:`".into(),
+            span: name_tok.span,
+        })?;
+        if !matches!(colon.node, Token::Colon) {
+            return Err(AnalError::Parse {
+                message: "PASSAGE name must be followed by `:`".into(),
+                span: colon.span,
+            });
+        }
+
+        // Swap our main accumulator out so the passage body collects into a
+        // fresh Vec. The loop_stack is reset too — control flow inside a
+        // passage must balance independently of the main body.
+        let saved_instrs = std::mem::take(&mut self.instrs);
+        let saved_loops = std::mem::take(&mut self.loop_stack);
+
+        let exit_span = loop {
+            match self.peek_kind() {
+                Some(Token::Exit) => {
+                    let exit = self.advance().unwrap();
+                    break exit.span;
+                }
+                Some(_) => self.parse_statement()?,
+                None => {
+                    return Err(AnalError::Parse {
+                        message: format!("PASSAGE `{name}` was never closed with EXIT"),
+                        span: passage_span,
+                    });
+                }
+            }
+        };
+
+        if let Some((jump_addr, _)) = self.loop_stack.last() {
+            return Err(AnalError::Rupture {
+                span: self.instrs[*jump_addr].span,
+            });
+        }
+
+        self.emit(Op::Return, exit_span);
+
+        let body = std::mem::replace(&mut self.instrs, saved_instrs);
+        self.loop_stack = saved_loops;
+
+        self.passages.insert(name, body);
         Ok(())
     }
 
@@ -222,6 +304,38 @@ impl<'a> Parser<'a> {
                 self.emit(Op::Expand(n), span);
             }
 
+            // ── ENTER <passage> ────────────────────────
+            Token::Enter => {
+                let name_tok = self.advance().ok_or_else(|| AnalError::Parse {
+                    message: "ENTER expects a passage name".into(),
+                    span,
+                })?;
+                let name = match name_tok.node {
+                    Token::Ident(n) => n,
+                    other => {
+                        return Err(AnalError::Parse {
+                            message: format!("ENTER expects an identifier, found {other:?}"),
+                            span: name_tok.span,
+                        });
+                    }
+                };
+                self.emit(Op::Enter(name), span);
+            }
+
+            // ── PASSAGE / EXIT outside their valid positions ──
+            Token::Passage => {
+                return Err(AnalError::Parse {
+                    message: "PASSAGE declarations must appear before the main body".into(),
+                    span,
+                });
+            }
+            Token::Exit => {
+                return Err(AnalError::Parse {
+                    message: "EXIT is only valid inside a PASSAGE body".into(),
+                    span,
+                });
+            }
+
             // ── CASING: lowercase form of a known keyword ─
             Token::Ident(name) => {
                 if name != name.to_uppercase() && is_known_keyword(&name.to_uppercase()) {
@@ -245,13 +359,7 @@ impl<'a> Parser<'a> {
             }
 
             // ── Spec'd but not yet supported in v0.1 ───
-            other @ (Token::Hold
-            | Token::Resume
-            | Token::Receive
-            | Token::Evacuate
-            | Token::Passage
-            | Token::Enter
-            | Token::Exit) => {
+            other @ (Token::Hold | Token::Resume | Token::Receive | Token::Evacuate) => {
                 return Err(AnalError::Parse {
                     message: format!("{other:?} is not yet implemented"),
                     span,
@@ -409,25 +517,46 @@ mod tests {
 
     #[test]
     fn compile_hello_world() {
-        let code = compile(
+        let program = compile(
             r#"PUSH "Hello, World!"
 EXPEL"#,
         )
         .unwrap();
-        assert_eq!(code.len(), 2);
-        assert!(matches!(code[0].op, Op::Push(Value::Str(_))));
-        assert!(matches!(code[1].op, Op::Expel));
+        assert_eq!(program.main.len(), 2);
+        assert!(matches!(program.main[0].op, Op::Push(Value::Str(_))));
+        assert!(matches!(program.main[1].op, Op::Expel));
+        assert!(program.passages.is_empty());
     }
 
     #[test]
     fn compile_with_header() {
-        let code = compile(
+        let program = compile(
             r#"ANAL "hi" VERSION 1
 PUSH 42
 DISCHARGE"#,
         )
         .unwrap();
-        assert_eq!(code.len(), 2);
+        assert_eq!(program.main.len(), 2);
+    }
+
+    #[test]
+    fn compile_with_passage() {
+        let program = compile(
+            r#"PASSAGE square:
+  DUP
+  MUL
+EXIT
+
+PUSH 9
+ENTER square
+DISCHARGE"#,
+        )
+        .unwrap();
+        assert_eq!(program.passages.len(), 1);
+        assert!(program.passages.contains_key("square"));
+        // The main body should contain ENTER and DISCHARGE.
+        assert_eq!(program.main.len(), 3);
+        assert!(matches!(program.main[1].op, Op::Enter(ref n) if n == "square"));
     }
 
     #[test]

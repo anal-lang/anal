@@ -1,0 +1,24 @@
+; square.anal — first-class subroutines via PASSAGE.
+;
+; PASSAGEs share the global stack — there are no locals. The body runs
+; on whatever is on top when ENTER is called, and leaves its result(s)
+; on the stack for the caller. PASSAGE declarations must appear before
+; the main body.
+
+ANAL "square" VERSION 1
+
+PASSAGE square:
+  DUP
+  MUL
+EXIT
+
+PUSH 9
+ENTER square
+DISCHARGE
+; Output: 81
+
+PUSH 4
+ENTER square
+ENTER square
+DISCHARGE
+; Output: 256   (4 squared = 16; 16 squared = 256)

@@ -6,8 +6,22 @@
 //! of the source token it originated from, so the VM can surface useful
 //! error spans even after compilation.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use crate::token::Span;
 use crate::value::Value;
+
+/// A complete compiled ANAL program: the main entry-point bytecode plus
+/// any [`PASSAGE`](Op::Enter)-declared subroutines.
+///
+/// Bodies are stored behind `Rc` so the VM can keep cheap references to
+/// the currently-executing block in its call stack.
+#[derive(Debug, Clone)]
+pub struct Program {
+    pub main: Rc<[Instr]>,
+    pub passages: HashMap<String, Rc<[Instr]>>,
+}
 
 /// One bytecode instruction in compiled form.
 #[derive(Debug, Clone, PartialEq)]

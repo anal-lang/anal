@@ -26,7 +26,7 @@ pub mod value;
 pub mod vm;
 
 pub use error::AnalError;
-pub use op::{Instr, Op};
+pub use op::{Instr, Op, Program};
 pub use parser::compile;
 pub use token::Span;
 pub use value::Value;
