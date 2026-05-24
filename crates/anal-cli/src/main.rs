@@ -1,5 +1,6 @@
 //! Command-line interface for the ANAL programming language.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -23,63 +24,48 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.cmd {
-        Cmd::Run { file } => run(&file),
-        Cmd::Probe { file } => probe(&file),
+    let (path, is_probe) = match &cli.cmd {
+        Cmd::Run { file } => (file.clone(), false),
+        Cmd::Probe { file } => (file.clone(), true),
     };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
+
+    let source = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("could not read {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let result: Result<(), AnalError> = if is_probe {
+        compile(&source).map(|_| ())
+    } else {
+        compile(&source).and_then(|code| {
+            let mut vm = VM::new();
+            vm.execute(&code)
+        })
+    };
+
+    match result {
+        Ok(()) => {
+            if is_probe {
+                println!("{}: OK", path.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            print_anal_error(&path, &source, &err);
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(path: &Path) -> anyhow::Result<()> {
-    let source = read_source(path)?;
-    let code = compile(&source).map_err(|e| render(path, &source, e))?;
-    let mut vm = VM::new();
-    vm.execute(&code).map_err(|e| render(path, &source, e))?;
-    Ok(())
-}
-
-fn probe(path: &Path) -> anyhow::Result<()> {
-    let source = read_source(path)?;
-    compile(&source).map_err(|e| render(path, &source, e))?;
-    println!("{}: OK", path.display());
-    Ok(())
-}
-
-fn read_source(path: &Path) -> anyhow::Result<String> {
-    std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", path.display()))
-}
-
-/// Render an [`AnalError`] with the source location annotated.
-fn render(path: &Path, source: &str, err: AnalError) -> anyhow::Error {
-    let (line, col) = locate(source, err.span().start);
-    anyhow::anyhow!(
-        "error[{code}]: {err}\n  at {path}:{line}:{col}",
-        code = err.code(),
-        path = path.display(),
-    )
-}
-
-/// 1-based (line, column) for a byte offset into `source`.
-fn locate(source: &str, byte_offset: usize) -> (usize, usize) {
-    let mut line = 1usize;
-    let mut col = 1usize;
-    for (i, ch) in source.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
+fn print_anal_error(path: &Path, source: &str, err: &AnalError) {
+    let path_str = path.display().to_string();
+    let stderr = std::io::stderr();
+    let mut lock = stderr.lock();
+    if err.render(&path_str, source, &mut lock).is_err() {
+        // Fallback if ariadne fails for any reason.
+        let _ = writeln!(lock, "error[{code}]: {err}", code = err.code());
     }
-    (line, col)
 }
