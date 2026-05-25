@@ -1,0 +1,21 @@
+; expand.anal — EXPAND raises the stack's capacity cap. Programs that
+; never call EXPAND have no cap and never OVERFLOW. Programs that opt in
+; commit, up front, to how much they will push.
+;
+;   $ anal run examples/expand.anal
+;   3
+;
+; EXPAND is monotonic: subsequent EXPANDs only raise the cap, never lower
+; it. Call before you need it, not after. Push past the cap and the
+; runtime raises OVERFLOW (E003) — see bad_overflow.anal.
+
+ANAL "expand" VERSION 1
+
+EXPAND 4
+
+PUSH 1
+PUSH 2
+PUSH 3
+
+DEPTH
+DISCHARGE

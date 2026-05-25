@@ -30,6 +30,11 @@ pub struct VM {
     /// Set by `ABORT`. Causes all currently-executing blocks (including
     /// nested PASSAGE calls) to short-circuit back to the top.
     aborted: bool,
+    /// Optional stack capacity cap. `None` means unbounded (the default —
+    /// programs that never call `EXPAND` behave exactly as before). The
+    /// first `EXPAND n` sets it to `len + n`; subsequent `EXPAND`s only
+    /// raise it. A push past the cap raises `OVERFLOW`.
+    capacity: Option<usize>,
 }
 
 /// How a single instruction influences the surrounding block's PC.
@@ -56,6 +61,7 @@ impl VM {
             consent_armed: false,
             clench_depth: 0,
             aborted: false,
+            capacity: None,
         }
     }
 
@@ -117,7 +123,7 @@ impl VM {
             // ── stack ───────────────────────────────────
             Op::Push(v) => {
                 self.check_unclenched("PUSH", span)?;
-                self.stack.push(v.clone());
+                self.push(v.clone(), span)?;
             }
             Op::Pop => {
                 self.check_unclenched("POP", span)?;
@@ -130,7 +136,7 @@ impl VM {
             Op::Dup => {
                 self.check_unclenched("DUP", span)?;
                 let top = self.peek("DUP", span)?.clone();
-                self.stack.push(top);
+                self.push(top, span)?;
             }
             Op::Swap => {
                 self.check_unclenched("SWAP", span)?;
@@ -142,7 +148,8 @@ impl VM {
             }
             Op::Depth => {
                 self.check_unclenched("DEPTH", span)?;
-                self.stack.push(Value::Int(self.stack.len() as i64));
+                let n = self.stack.len() as i64;
+                self.push(Value::Int(n), span)?;
             }
 
             // ── I/O ─────────────────────────────────────
@@ -168,7 +175,7 @@ impl VM {
                 self.check_unclenched("EQ", span)?;
                 let b = self.pop("EQ", span)?;
                 let a = self.pop("EQ", span)?;
-                self.stack.push(Value::Bool(a == b));
+                self.push(Value::Bool(a == b), span)?;
             }
             Op::Lt => self.binop_cmp(span, "LT", |o| o == Ordering::Less)?,
             Op::Gt => self.binop_cmp(span, "GT", |o| o == Ordering::Greater)?,
@@ -177,7 +184,7 @@ impl VM {
             Op::Not => {
                 self.check_unclenched("NOT", span)?;
                 let v = self.pop("NOT", span)?;
-                self.stack.push(Value::Bool(!v.is_truthy()));
+                self.push(Value::Bool(!v.is_truthy()), span)?;
             }
 
             // ── conversion ──────────────────────────────
@@ -281,7 +288,7 @@ impl VM {
                     });
                 }
                 let idx = len - *depth;
-                self.stack.insert(idx, value.clone());
+                self.push_at(idx, value.clone(), span)?;
                 self.prep_armed = false;
             }
             Op::Extract(depth) => {
@@ -313,10 +320,18 @@ impl VM {
                 self.consent_armed = false;
             }
 
-            // ── EXPAND: spec'd as "grow buffer". Vec grows on demand,
-            //    so we treat EXPAND as a no-op past argument validation.
-            Op::Expand(_n) => {
+            // ── EXPAND <n>: raise the stack capacity cap by `n` slots
+            //    above the current depth. The first EXPAND turns the cap
+            //    on; subsequent EXPANDs only raise it (never lower).
+            //    A push past the cap raises OVERFLOW.
+            Op::Expand(n) => {
                 self.check_unclenched("EXPAND", span)?;
+                let target = self.stack.len().saturating_add(*n);
+                self.capacity = Some(match self.capacity {
+                    Some(cur) => cur.max(target),
+                    None => target,
+                });
+                self.stack.reserve(*n);
             }
 
             // ── INGEST / EVACUATE / RECEIVE ─────────────
@@ -328,7 +343,7 @@ impl VM {
                         found: format!("INGEST: {e}"),
                         span,
                     })?;
-                self.stack.push(Value::Str(Rc::from(contents.as_str())));
+                self.push(Value::Str(Rc::from(contents.as_str())), span)?;
             }
             Op::Evacuate(path) => {
                 let content = match self.peek("EVACUATE", span)? {
@@ -378,15 +393,63 @@ impl VM {
                 while matches!(line.chars().last(), Some('\n' | '\r')) {
                     line.pop();
                 }
-                self.stack.push(Value::Str(Rc::from(line.as_str())));
+                self.push(Value::Str(Rc::from(line.as_str())), span)?;
             }
 
-            // ── still pending in v0.2 ───────────────────
-            Op::Hold(_) | Op::Resume => {
-                return Err(AnalError::Parse {
-                    message: format!("VM: op {op:?} not yet implemented in v0.1"),
-                    span,
-                });
+            // ── HOLD [ms]: pause execution ──────────────
+            //    With an INT operand: sleep that many milliseconds, then
+            //    continue. Pure side-effect, stack-neutral.
+            //    Without an operand: read lines from stdin until one equals
+            //    "RESUME", then continue. Pairs with a source-level RESUME
+            //    in another ANAL process (or any tool that writes the
+            //    line). Stack-neutral.
+            Op::Hold(ms) => {
+                self.check_unclenched("HOLD", span)?;
+                match ms {
+                    Some(n) => {
+                        out.flush().map_err(|_| io_err("HOLD", span))?;
+                        err.flush().map_err(|_| io_err("HOLD", span))?;
+                        std::thread::sleep(std::time::Duration::from_millis(*n));
+                    }
+                    None => {
+                        out.flush().map_err(|_| io_err("HOLD", span))?;
+                        err.flush().map_err(|_| io_err("HOLD", span))?;
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            let n =
+                                input
+                                    .read_line(&mut line)
+                                    .map_err(|e| AnalError::Rejection {
+                                        expected: "RESUME signal on stdin",
+                                        found: format!("HOLD: {e}"),
+                                        span,
+                                    })?;
+                            if n == 0 {
+                                return Err(AnalError::Rejection {
+                                    expected: "RESUME signal on stdin",
+                                    found: "EOF".into(),
+                                    span,
+                                });
+                            }
+                            if line.trim_end_matches(['\n', '\r']) == "RESUME" {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── RESUME: emit a RESUME signal to stdout ──
+            //    In the single-threaded reference interpreter, RESUME is
+            //    only meaningful as something *another* ANAL process can
+            //    observe. Source-level RESUME writes the line "RESUME"
+            //    to the EXPEL/DISCHARGE channel so a piped peer waiting
+            //    on a bare HOLD can wake up. Stack-neutral.
+            Op::Resume => {
+                self.check_unclenched("RESUME", span)?;
+                writeln!(out, "RESUME").map_err(|_| io_err("RESUME", span))?;
+                out.flush().map_err(|_| io_err("RESUME", span))?;
             }
         }
         Ok(Flow::Continue)
@@ -403,6 +466,29 @@ impl VM {
 
     fn pop(&mut self, op: &'static str, span: Span) -> Result<Value, AnalError> {
         self.stack.pop().ok_or(AnalError::Emptiness { op, span })
+    }
+
+    /// Push, honouring the `EXPAND`-set capacity cap. Use this in preference
+    /// to `self.stack.push` so `OVERFLOW` is raised at the right boundary.
+    fn push(&mut self, v: Value, span: Span) -> Result<(), AnalError> {
+        if let Some(cap) = self.capacity {
+            if self.stack.len() >= cap {
+                return Err(AnalError::Overflow { span });
+            }
+        }
+        self.stack.push(v);
+        Ok(())
+    }
+
+    /// Insert at a depth, honouring the capacity cap.
+    fn push_at(&mut self, idx: usize, v: Value, span: Span) -> Result<(), AnalError> {
+        if let Some(cap) = self.capacity {
+            if self.stack.len() >= cap {
+                return Err(AnalError::Overflow { span });
+            }
+        }
+        self.stack.insert(idx, v);
+        Ok(())
     }
 
     fn peek(&self, op: &'static str, span: Span) -> Result<&Value, AnalError> {
@@ -441,8 +527,7 @@ impl VM {
                 });
             }
         };
-        self.stack.push(result);
-        Ok(())
+        self.push(result, span)
     }
 
     fn binop_div(&mut self, span: Span, op_name: &'static str) -> Result<(), AnalError> {
@@ -467,8 +552,7 @@ impl VM {
                 });
             }
         };
-        self.stack.push(result);
-        Ok(())
+        self.push(result, span)
     }
 
     fn binop_mod(&mut self, span: Span, op_name: &'static str) -> Result<(), AnalError> {
@@ -493,8 +577,7 @@ impl VM {
                 });
             }
         };
-        self.stack.push(result);
-        Ok(())
+        self.push(result, span)
     }
 
     fn binop_cmp(
@@ -521,8 +604,7 @@ impl VM {
                 });
             }
         };
-        self.stack.push(Value::Bool(f(ord)));
-        Ok(())
+        self.push(Value::Bool(f(ord)), span)
     }
 
     fn convert_to_int(&mut self, span: Span) -> Result<(), AnalError> {
@@ -545,8 +627,7 @@ impl VM {
                 });
             }
         };
-        self.stack.push(Value::Int(n));
-        Ok(())
+        self.push(Value::Int(n), span)
     }
 
     fn convert_to_float(&mut self, span: Span) -> Result<(), AnalError> {
@@ -575,16 +656,14 @@ impl VM {
                 });
             }
         };
-        self.stack.push(Value::Float(x));
-        Ok(())
+        self.push(Value::Float(x), span)
     }
 
     fn convert_to_str(&mut self, span: Span) -> Result<(), AnalError> {
         self.check_unclenched("TO_STRING", span)?;
         let v = self.pop("TO_STRING", span)?;
         let s = format!("{v}");
-        self.stack.push(Value::Str(Rc::from(s.as_str())));
-        Ok(())
+        self.push(Value::Str(Rc::from(s.as_str())), span)
     }
 }
 
@@ -1106,6 +1185,118 @@ IF_TIGHT [
 ]"#);
         result.unwrap();
         assert_eq!(out, "3\n2\n1\n");
+    }
+
+    // ── EXPAND / HOLD / RESUME ──────────────────────────
+
+    #[test]
+    fn expand_without_overflow_is_a_noop_for_correct_programs() {
+        // EXPAND 4 from a depth-0 stack: cap = 4. The three explicit pushes
+        // plus the implicit one from DEPTH all fit; nothing overflows.
+        let (out, _, result) = run(r#"EXPAND 4
+PUSH 1
+PUSH 2
+PUSH 3
+DEPTH
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn push_past_expand_cap_raises_overflow() {
+        // EXPAND 2 from a depth-0 stack: cap = 2. The third push trips OVERFLOW.
+        let (_, _, result) = run(r#"EXPAND 2
+PUSH 1
+PUSH 2
+PUSH 3"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Overflow { .. }));
+    }
+
+    #[test]
+    fn second_expand_raises_cap_never_lowers() {
+        // EXPAND 1 then EXPAND 5 → effective cap is 5. Four explicit pushes
+        // plus the implicit one from DEPTH all fit.
+        let (out, _, result) = run(r#"EXPAND 1
+EXPAND 5
+PUSH 1
+PUSH 2
+PUSH 3
+PUSH 4
+DEPTH
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn expand_after_pushes_caps_at_current_depth_plus_n() {
+        // Two pushes (depth 2), then EXPAND 1 → cap = 3. One more push fits;
+        // a second additional push trips OVERFLOW.
+        let (_, _, result) = run(r#"PUSH 1
+PUSH 2
+EXPAND 1
+PUSH 3
+PUSH 4"#);
+        assert!(matches!(result.unwrap_err(), AnalError::Overflow { .. }));
+    }
+
+    #[test]
+    fn without_expand_no_overflow_ever() {
+        // No EXPAND => no cap. Pushing many values must not raise OVERFLOW.
+        let mut src = String::from("PUSH 0\n");
+        for _ in 0..200 {
+            src.push_str("DUP\n");
+        }
+        src.push_str("DEPTH\nDISCHARGE\n");
+        let (out, _, result) = run(&src);
+        result.unwrap();
+        assert_eq!(out, "201\n");
+    }
+
+    #[test]
+    fn hold_zero_ms_is_essentially_instant() {
+        // HOLD 0 is well-defined: sleep(0). Stack-neutral.
+        let (out, _, result) = run(r#"PUSH 1
+HOLD 0
+PUSH 2
+ADD
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn hold_negative_ms_is_parse_error() {
+        let (_, _, result) = run("HOLD -1");
+        let err = result.unwrap_err();
+        assert!(matches!(err, AnalError::Parse { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn bare_hold_waits_for_resume_line_on_stdin() {
+        // Bare HOLD blocks on stdin until a line equal to "RESUME" arrives.
+        // We pre-supply "noise\nRESUME\n" so HOLD ignores the first line
+        // and continues after the second.
+        let (out, _, result) = run_with_input("HOLD\nPUSH 7\nDISCHARGE\n", b"noise\nRESUME\n");
+        result.unwrap();
+        assert_eq!(out, "7\n");
+    }
+
+    #[test]
+    fn bare_hold_eof_is_rejection() {
+        // No RESUME, no input — EOF on stdin while HOLDing is a REJECTION.
+        let (_, _, result) = run_with_input("HOLD\n", b"");
+        assert!(matches!(result.unwrap_err(), AnalError::Rejection { .. }));
+    }
+
+    #[test]
+    fn resume_emits_resume_line_on_stdout() {
+        // Source-level RESUME writes "RESUME\n" to the EXPEL/DISCHARGE channel
+        // so a piped peer waiting on a bare HOLD can wake up.
+        let (out, _, result) = run("RESUME");
+        result.unwrap();
+        assert_eq!(out, "RESUME\n");
     }
 
     #[test]

@@ -105,6 +105,8 @@ The [`examples/`](examples/) directory contains the canonical demonstrations. Al
 | [`square.anal`](examples/square.anal) | First-class subroutines via `PASSAGE` / `ENTER` / `EXIT`. |
 | [`add_two.anal`](examples/add_two.anal) | Reading from stdin with `RECEIVE`. |
 | [`echo.anal`](examples/echo.anal) | The minimal `RECEIVE` / `DISCHARGE` round-trip. |
+| [`expand.anal`](examples/expand.anal) | `EXPAND` reserves capacity. Push past it and the runtime raises `OVERFLOW`. |
+| [`hold.anal`](examples/hold.anal) | `HOLD <ms>` pauses execution. Bare `HOLD` waits for a `RESUME` line on stdin. |
 | [`bad.anal`](examples/bad.anal) | What a `TIGHTNESS` looks like. Run it on purpose. |
 
 Run any of them:
@@ -125,7 +127,7 @@ anal probe examples/consent_dialog.anal
 
 **v0.1 has shipped.** The reference implementation in Rust runs every example in this repository end-to-end. The [language specification](https://1xn.github.io/anal/) documents what the v0.1 interpreter accepts.
 
-What's in v0.1: stack ops (`PUSH`, `POP`, `DUP`, `SWAP`, `DEPTH`, `PROBE`), arithmetic, comparison, control flow (`IF_TIGHT`, `IF_LOOSE`, `DILATE`/`CONSTRICT`, `ABORT`), I/O (`EXPEL`, `DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `INSERT`, `EXTRACT`, `FLUSH`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, and ariadne-rendered diagnostics. `EXPAND` / `HOLD` / `RESUME` are accepted by the parser but are currently no-ops past argument validation.
+What's in v0.1: stack ops (`PUSH`, `POP`, `DUP`, `SWAP`, `DEPTH`, `PROBE`), arithmetic, comparison, control flow (`IF_TIGHT`, `IF_LOOSE`, `DILATE`/`CONSTRICT`, `ABORT`), I/O (`EXPEL`, `DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `INSERT`, `EXTRACT`, `FLUSH`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, capacity management (`EXPAND` with real `OVERFLOW`), pause/resume signalling (`HOLD` / `RESUME`), and ariadne-rendered diagnostics.
 
 What is not in v0.1: a module system, a type system beyond the built-in scalars, FFI, a REPL, or any form of concurrency.
 
@@ -134,7 +136,7 @@ What is not in v0.1: a module system, a type system beyond the built-in scalars,
 ## Milestones
 
 - **v0.1** ✓ shipped — reference interpreter, full spec coverage of the core ops, install pipeline.
-- **v0.2** — module system, real type errors, `EXPAND` / `HOLD` / `RESUME` lifted out of no-op status.
+- **v0.2** — module system, real type errors.
 - **v1.0** — `analc`, the self-hosted compiler. ANAL compiling ANAL into `.sph` bytecode.
 - **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§9](https://1xn.github.io/anal/#suppository); neither shipped.
 

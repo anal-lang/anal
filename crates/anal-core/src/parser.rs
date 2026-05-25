@@ -327,6 +327,30 @@ impl<'a> Parser<'a> {
                 self.emit(Op::Expand(n), span);
             }
 
+            // ── HOLD [ms] ──────────────────────────────
+            //   With a non-negative INT operand: sleep that long.
+            //   Without one: block until a RESUME signal arrives on stdin.
+            Token::Hold => {
+                let ms = match self.peek_kind() {
+                    Some(Token::Int(n)) if *n >= 0 => {
+                        let n = *n as u64;
+                        self.advance();
+                        Some(n)
+                    }
+                    Some(Token::Int(_)) => {
+                        return Err(AnalError::Parse {
+                            message: "HOLD ms must be non-negative".into(),
+                            span,
+                        });
+                    }
+                    _ => None,
+                };
+                self.emit(Op::Hold(ms), span);
+            }
+
+            // ── RESUME ─────────────────────────────────
+            Token::Resume => self.emit(Op::Resume, span),
+
             // ── ENTER ───────────────────────────────────
             //
             //   ENTER <name>   — call a named PASSAGE
@@ -389,14 +413,6 @@ impl<'a> Parser<'a> {
             Token::Anal | Token::Version => {
                 return Err(AnalError::Parse {
                     message: "header keywords are only valid before the body".into(),
-                    span,
-                });
-            }
-
-            // ── Spec'd but not yet supported in v0.1 ───
-            other @ (Token::Hold | Token::Resume) => {
-                return Err(AnalError::Parse {
-                    message: format!("{other:?} is not yet implemented"),
                     span,
                 });
             }

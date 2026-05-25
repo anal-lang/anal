@@ -1,0 +1,27 @@
+; hold.anal — HOLD <ms> pauses execution for the given number of
+; milliseconds, then continues. Stack-neutral. Useful when the next
+; line in a pipeline isn't ready yet.
+;
+;   $ anal run examples/hold.anal
+;   tick
+;   tick
+;   tick
+;
+; HOLD with no operand blocks until a line equal to "RESUME" arrives on
+; stdin. Source-level RESUME writes "RESUME" to stdout. Two ANAL
+; processes can rendezvous over a pipe — one HOLDs, the other RESUMEs.
+
+ANAL "hold" VERSION 1
+
+PUSH "tick"
+DISCHARGE
+
+HOLD 100
+
+PUSH "tick"
+DISCHARGE
+
+HOLD 100
+
+PUSH "tick"
+DISCHARGE

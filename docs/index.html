@@ -767,17 +767,23 @@ footer {
       <tr>
         <td><span class="cmd-kw">EXPAND</span></td>
         <td><span class="cmd-arg">&lt;n&gt;</span></td>
-        <td class="cmd-desc">Grow buffer capacity by n units. Call before you need it, not after.</td>
+        <td class="cmd-desc">Reserve capacity for n more values above the current depth. Call before you need it, not after.
+          <div class="cmd-note">Monotonic: subsequent EXPANDs only raise the cap, never lower it. A push past the cap raises OVERFLOW. Stacks with no EXPAND are uncapped and never overflow.</div>
+        </td>
       </tr>
       <tr>
         <td><span class="cmd-kw">HOLD</span></td>
         <td><span class="cmd-arg">[ms]</span></td>
-        <td class="cmd-desc">Pause execution. If ms omitted, waits for a RESUME signal.</td>
+        <td class="cmd-desc">Pause execution. With an INT operand, sleeps that many milliseconds. Without one, waits for a RESUME signal.
+          <div class="cmd-note">Stack-neutral. The reference interpreter delivers the RESUME signal as a line equal to <code>RESUME</code> on stdin; EOF before that line raises REJECTION.</div>
+        </td>
       </tr>
       <tr>
         <td><span class="cmd-kw">RESUME</span></td>
         <td></td>
-        <td class="cmd-desc">Resume execution following a HOLD.</td>
+        <td class="cmd-desc">Emit a RESUME signal so a peer waiting on a bare HOLD can wake up.
+          <div class="cmd-note">Stack-neutral. The reference interpreter writes the line <code>RESUME</code> to stdout, so two ANAL processes can rendezvous over a pipe.</div>
+        </td>
       </tr>
     </tbody>
   </table>
