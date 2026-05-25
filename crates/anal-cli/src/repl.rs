@@ -37,7 +37,11 @@ use rustyline::{Config, DefaultEditor};
 
 use crate::Flags;
 
-const BANNER_TITLE: &str = concat!("ANAL v", env!("CARGO_PKG_VERSION"), " — interactive session.");
+const BANNER_TITLE: &str = concat!(
+    "ANAL v",
+    env!("CARGO_PKG_VERSION"),
+    " — interactive session."
+);
 const BANNER_BODY: &str = "\
 The stack persists. PASSAGEs persist. Latches persist.
 Type `:help` for guidance, `:reset` to clear the stack, or `:quit` to leave.";
