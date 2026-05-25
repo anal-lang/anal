@@ -24,7 +24,7 @@ jobs:
               "Patches are submitted by email. Issues are raised by insertion into the tracker.",
               "The RFC PASSAGE process governs all significant changes.",
               "",
-              "See the [contributing policy](https://github.com/1xn/anal#contributing) for details.",
+              "See the [contributing policy](https://github.com/anal-lang/anal#contributing) for details.",
             ].join("\n");
 
             await github.rest.issues.createComment({

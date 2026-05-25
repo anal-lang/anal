@@ -12,7 +12,7 @@
 
 set -eu
 
-REPO="1xn/anal"
+REPO="anal-lang/anal"
 BIN="anal"
 
 say()  { printf '%s\n' "$*"; }
