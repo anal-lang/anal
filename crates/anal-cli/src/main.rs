@@ -1,5 +1,7 @@
 //! Command-line interface for the ANAL programming language.
 
+mod repl;
+
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -28,7 +30,7 @@ struct Cli {
     verbose: bool,
 
     /// Disable ANSI colour in diagnostics. Auto-detected for non-TTY output;
-    /// also honours `NO_COLOR` (https://no-color.org).
+    /// also honours `NO_COLOR` (<https://no-color.org>).
     #[arg(long, global = true)]
     no_color: bool,
 
@@ -59,10 +61,10 @@ enum Cmd {
 }
 
 #[derive(Clone, Copy)]
-struct Flags {
-    quiet: bool,
-    verbose: bool,
-    no_color: bool,
+pub(crate) struct Flags {
+    pub(crate) quiet: bool,
+    pub(crate) verbose: bool,
+    pub(crate) no_color: bool,
 }
 
 fn main() -> ExitCode {
@@ -79,8 +81,7 @@ fn main() -> ExitCode {
     }
 
     let Some(cmd) = cli.cmd else {
-        eprintln!("EVACUATE: no command — try `anal --help` or `anal run <FILE>`.");
-        return ExitCode::FAILURE;
+        return start_default(flags);
     };
 
     match cmd {
@@ -90,6 +91,51 @@ fn main() -> ExitCode {
         }
         Cmd::Run { file } => run(&file, flags),
         Cmd::Probe { file } => probe(&file, flags),
+    }
+}
+
+/// Dispatch when no subcommand was given.
+///
+/// If stdin is a TTY, start the interactive REPL. If stdin is a pipe
+/// or redirected file, read the whole thing as an ANAL script and
+/// execute it — matching the standard `python` / `node` behaviour.
+fn start_default(flags: Flags) -> ExitCode {
+    if std::io::stdin().is_terminal() {
+        match repl::run(flags) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("EVACUATE: REPL error — {e}.");
+                ExitCode::FAILURE
+            }
+        }
+    } else {
+        let mut source = String::new();
+        if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut source) {
+            eprintln!("EVACUATE: cannot INGEST stdin — {e}.");
+            return ExitCode::FAILURE;
+        }
+        execute_source(&source, "<stdin>", flags)
+    }
+}
+
+/// Compile and run an in-memory source string. Shared by piped-stdin
+/// execution and the `:load` meta-command sketches.
+fn execute_source(source: &str, source_id: &str, flags: Flags) -> ExitCode {
+    match compile(source).and_then(|code| {
+        let mut vm = VM::new();
+        vm.execute(&code)
+    }) {
+        Ok(()) => {
+            if flags.verbose {
+                eprintln!("EXIT 0");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            let path = Path::new(source_id);
+            print_anal_error(path, source, &err, flags);
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -180,7 +226,7 @@ fn print_anal_error(path: &Path, source: &str, err: &AnalError, flags: Flags) {
 ///
 /// Honours, in order: `--no-color`, the `NO_COLOR` env var (any non-empty
 /// value disables), then the TTY status of the target stream.
-fn use_color(is_tty: bool, flags: Flags) -> bool {
+pub(crate) fn use_color(is_tty: bool, flags: Flags) -> bool {
     if flags.no_color {
         return false;
     }

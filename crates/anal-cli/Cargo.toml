@@ -16,3 +16,4 @@ path = "src/main.rs"
 anal-core = { path = "../anal-core" }
 clap      = { workspace = true }
 anyhow    = { workspace = true }
+rustyline = "18"
