@@ -1,11 +1,12 @@
-//! Static type checker — runs between [`crate::parser::compile`] and the
-//! VM and refuses any program whose stack shape it cannot reconcile.
+//! # Static type checker
 //!
-//! The checker walks bytecode, maintaining an *abstract stack* — a sequence
-//! of [`Ty`] values — and applies each op's typing rule. A typing rule that
-//! cannot be satisfied raises [`AnalError::Mismatch`]. Programs that run
-//! today and would have raised `REJECTION` at runtime now fail at probe
-//! time, with the same span.
+//! Runs between [`crate::parser::compile`] and the VM, and refuses
+//! any program whose stack shape it cannot reconcile. The checker
+//! walks bytecode with an *abstract stack* — a sequence of [`Ty`]
+//! values — and applies each op's typing rule. A rule that cannot
+//! be satisfied raises [`AnalError::Mismatch`] at the offending
+//! span, so programs that would have raised `REJECTION` at runtime
+//! now fail before they start.
 //!
 //! ## What it tracks
 //!
@@ -34,10 +35,11 @@
 //! that, after popping the loop condition, the stack shape at the start of
 //! the body equals the shape at the back-edge.
 //!
-//! `PASSAGE`s are re-checked at every call site against the caller's actual
-//! stack — this gives us simple ad-hoc polymorphism (so `PASSAGE square:
-//! DUP MUL EXIT` works on either INTs or FLOATs) without a real generics
-//! system.
+//! `PASSAGE`s are re-checked at every call site against the
+//! caller's actual stack. This buys us ad-hoc polymorphism for
+//! free — `PASSAGE square: DUP MUL EXIT` works on either INTs or
+//! FLOATs because the body sees the real types on each call. No
+//! generics machinery, no inference; just walk it again.
 
 use std::collections::{HashMap, HashSet};
 

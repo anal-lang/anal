@@ -1,14 +1,28 @@
-//! Parser — turns a token stream into a flat bytecode [`Vec<Instr>`].
+//! # Parser
 //!
-//! The language is small enough that the parser doubles as a code generator,
-//! so there is no separate AST module yet. Control flow (`DILATE`/`CONSTRICT`,
-//! `IF_TIGHT`/`IF_LOOSE`) is compiled to forward and backward jumps with
-//! target addresses patched as blocks close.
+//! Tokens in, bytecode out. For the bootstrap, parsing and code
+//! generation are fused into a single pass — there is no AST stage
+//! between them. This is a deliberate v0.x shortcut, not the
+//! long-term shape: the [`crate::ast`] and [`crate::compiler`]
+//! namespaces are reserved for the eventual split, when `analc`
+//! (the self-hosted compiler, ANAL compiling ANAL into `.sph`
+//! bytecode) needs a target data structure the Rust side can also
+//! produce and consume for bootstrap and verification. Until then,
+//! the parser does both jobs.
 //!
-//! Note on `IF_TIGHT [ ... ]`: the spec describes `[ ... ]` as a first-class
-//! `BLOC` value. For v0.1 the brackets are treated as a parse-time block
-//! delimiter only — proper `BLOC`-as-value semantics arrive with `PASSAGE`
-//! support in v0.2.
+//! Control flow is compiled in place: `DILATE`/`CONSTRICT` becomes
+//! a forward jump past the body plus a backward jump to the
+//! condition, with the forward target patched when `CONSTRICT`
+//! arrives. `IF_TIGHT [ ... ]` and `IF_LOOSE [ ... ]` are sugar —
+//! the inline `[ ... ]` is parsed into a `BLOC` value, pushed, then
+//! immediately consumed by the conditional exec op. The same
+//! `[ ... ]` may also appear standalone (a BLOC literal pushed to
+//! the stack like any other value), which is what lets a passage
+//! return executable code.
+//!
+//! PASSAGE bodies compile into their own instruction streams — a
+//! fresh accumulator, a fresh loop stack — so a `DILATE` inside a
+//! passage must balance independently of the main body.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -158,12 +172,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Header form: `ANAL "<name>" VERSION <int>` followed by any number of
-    /// `INGEST "<path>"` declarations (module imports — parsed-and-ignored
-    /// at v0.1).
+    /// Header form: `ANAL "<name>" VERSION <int>` followed by any
+    /// number of `INGEST "<path>"` import declarations. The imports
+    /// are parsed and ignored — the module system arrives later.
     ///
-    /// `INGEST` is *only* treated as a header import when an `ANAL` line
-    /// precedes it. A bare `INGEST "path"` at the top of a file is a body
+    /// `INGEST` only means "import" when an `ANAL` header precedes
+    /// it. A bare `INGEST "path"` at the top of a file is a body
     /// statement that reads the named file at runtime.
     fn parse_header_and_ingests(&mut self) -> Result<(), AnalError> {
         if !matches!(self.peek_kind(), Some(Token::Anal)) {
@@ -283,10 +297,10 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            // ── IF_TIGHT / IF_LOOSE [ ... ] — pop BLOC + cond ──
+            // ── IF_TIGHT / IF_LOOSE ────────────────────
             //
-            // `IF_TIGHT [ ... ]` is sugar for "push the BLOC then exec".
-            // A bare `IF_TIGHT` consumes whatever BLOC is already on top.
+            // With an inline `[ ... ]`: push the BLOC, then exec.
+            // Without: consume whatever BLOC is already on top.
             Token::IfTight => {
                 self.parse_inline_bloc_if_present(span)?;
                 self.emit(Op::IfTightExec, span);
@@ -331,9 +345,10 @@ impl<'a> Parser<'a> {
                 self.emit(Op::Expand(n), span);
             }
 
-            // ── HOLD [ms] ──────────────────────────────
-            //   With a non-negative INT operand: sleep that long.
-            //   Without one: block until a RESUME signal arrives on stdin.
+            // ── HOLD ───────────────────────────────────
+            //
+            // With a non-negative INT: sleep that many ms. Without:
+            // block until a RESUME signal arrives on stdin.
             Token::Hold => {
                 let ms = match self.peek_kind() {
                     Some(Token::Int(n)) if *n >= 0 => {
@@ -355,10 +370,10 @@ impl<'a> Parser<'a> {
             // ── RESUME ─────────────────────────────────
             Token::Resume => self.emit(Op::Resume, span),
 
-            // ── ENTER ───────────────────────────────────
+            // ── ENTER ──────────────────────────────────
             //
-            //   ENTER <name>   — call a named PASSAGE
-            //   ENTER          — pop a BLOC from the stack and execute it
+            // `ENTER <name>` calls a named PASSAGE; bare `ENTER`
+            // pops a BLOC from the stack and runs it.
             Token::Enter => match self.peek_kind() {
                 Some(Token::Ident(_)) => {
                     let name_tok = self.advance().unwrap();
