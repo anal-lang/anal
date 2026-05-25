@@ -1,9 +1,33 @@
-//! Stack-based virtual machine — executes a compiled [`Vec<Instr>`].
+//! # The ANAL Virtual Machine
 //!
-//! There is one global stack of [`Value`]s. The PC is advanced before each
-//! op runs, so jump ops simply overwrite it. I/O channels are injectable
-//! to keep the VM testable: `PROBE` writes to stderr (the inspection
-//! channel), `EXPEL` and `DISCHARGE` write to stdout.
+//! One stack of [`Value`]s, shared across every `PASSAGE` call and
+//! every `BLOC` entry. We considered per-call frames; we declined.
+//! A global stack is what makes a passage feel like a macro rather
+//! than a function — the caller's values are right there, the
+//! callee's leftovers are visible on return. This is the Forth
+//! lineage, and we are unrepentant about it.
+//!
+//! Alongside the stack live four pieces of latched state:
+//!
+//!   - `prep_armed` / `consent_armed` — one-shot capability tokens.
+//!     `PREP` authorises the next `INSERT`; `CONSENT` authorises
+//!     the next `EXTRACT` or `FLUSH`. The token is consumed by the
+//!     act it permits and does not regenerate. There is no
+//!     standing-authorisation form and there never will be.
+//!
+//!   - `clench_depth` — a counter, not a flag, because `CLENCH`es
+//!     nest and we are not animals. While non-zero, the stack is
+//!     frozen against mutation; `PROBE` and `EXPEL` still work
+//!     because reading is not violation.
+//!
+//!   - `aborted` — sticky, checked by `run_block`'s loop guard.
+//!     Once set, every enclosing block unwinds to the top.
+//!
+//!   - `capacity` — an optional cap installed by `EXPAND`. `None`
+//!     means unbounded, which is the default; programs that never
+//!     call `EXPAND` cannot raise `OVERFLOW`. The cap rises
+//!     monotonically, so `EXPAND` is safe to sprinkle defensively
+//!     — you can only commit to more headroom, never less.
 
 use std::cmp::Ordering;
 use std::io::{self, BufRead, BufReader, Write};
@@ -120,7 +144,10 @@ impl VM {
         err: &mut W2,
     ) -> Result<Flow, AnalError> {
         match op {
-            // ── stack ───────────────────────────────────
+            // ── Stack manipulation ──────────────────────────────
+            //
+            // PROBE is the odd one out: it lives here but doesn't
+            // check_unclenched, because reading is not mutation.
             Op::Push(v) => {
                 self.check_unclenched("PUSH", span)?;
                 self.push(v.clone(), span)?;
@@ -152,7 +179,10 @@ impl VM {
                 self.push(Value::Int(n), span)?;
             }
 
-            // ── I/O ─────────────────────────────────────
+            // ── Output channels ─────────────────────────────────
+            //
+            // EXPEL peeks-and-prints; DISCHARGE pops-and-prints.
+            // EXPEL is therefore CLENCH-safe and DISCHARGE is not.
             Op::Expel => {
                 let top = self.peek("EXPEL", span)?;
                 writeln!(out, "{top}").map_err(|_| io_err("EXPEL", span))?;
@@ -163,16 +193,24 @@ impl VM {
                 writeln!(out, "{top}").map_err(|_| io_err("DISCHARGE", span))?;
             }
 
-            // ── arithmetic ──────────────────────────────
-            //   ADD is the only one that accepts STRINGs: same-type strings
-            //   concatenate (spec §7). SUB/MUL/DIV/MOD are numeric only.
+            // ── Arithmetic ──────────────────────────────────────
+            //
+            // ADD doubles as string concatenation; the others are
+            // numeric only. DIV and MOD raise REJECTION on a zero
+            // divisor rather than panic — the VM crashes programs,
+            // never the host.
             Op::Add => self.binop_add(span)?,
             Op::Sub => self.binop_arith(span, "SUB", |a, b| a - b, |a, b| a - b)?,
             Op::Mul => self.binop_arith(span, "MUL", |a, b| a * b, |a, b| a * b)?,
             Op::Div => self.binop_div(span, "DIV")?,
             Op::Mod => self.binop_mod(span, "MOD")?,
 
-            // ── comparison ──────────────────────────────
+            // ── Comparison ──────────────────────────────────────
+            //
+            // EQ is structural and total. The ordered comparisons
+            // are numeric-only, and NaN raises REJECTION rather
+            // than silently returning false — silent-false on NaN
+            // is how hours of debugging happen.
             Op::EqOp => {
                 self.check_unclenched("EQ", span)?;
                 let b = self.pop("EQ", span)?;
@@ -189,12 +227,23 @@ impl VM {
                 self.push(Value::Bool(!v.is_truthy()), span)?;
             }
 
-            // ── conversion ──────────────────────────────
+            // ── Type conversion ─────────────────────────────────
+            //
+            // Explicit only, never implicit. The error reporter
+            // suggests TO_INT/TO_FLOAT/TO_STRING on type
+            // rejections but stays quiet on I/O rejections —
+            // suggesting TO_STRING when stdin returned EOF would
+            // be cruel.
             Op::ToInt => self.convert_to_int(span)?,
             Op::ToFloat => self.convert_to_float(span)?,
             Op::ToStr => self.convert_to_str(span)?,
 
-            // ── flow control ────────────────────────────
+            // ── Flow control ────────────────────────────────────
+            //
+            // DILATE/CONSTRICT in source compile to the conditional
+            // jumps below. ABORT sets a sticky flag that every
+            // enclosing `run_block` honours on its next tick,
+            // unwinding the whole call tower cooperatively.
             Op::Jump(target) => return Ok(Flow::Jump(*target)),
             Op::JumpIfFalsy(target) => {
                 self.check_unclenched("DILATE/IF_TIGHT", span)?;
@@ -215,7 +264,16 @@ impl VM {
                 return Ok(Flow::Return);
             }
 
-            // ── PASSAGE / BLOC call & return ────────────
+            // ── PASSAGE / BLOC call and return ──────────────────
+            //
+            // Two ways to invoke code: by name (ENTER <passage>)
+            // or by value (ENTER on a popped BLOC). BLOC is a
+            // first-class Value precisely so you can DUP it, pass
+            // it through a passage, return it on the stack.
+            //
+            // IF_TIGHT/IF_LOOSE are op-level rather than source
+            // sugar so the typechecker sees the conditional and
+            // its body as one unit, not as jump arithmetic.
             Op::Enter(name) => {
                 let passage = program
                     .passages
@@ -250,7 +308,15 @@ impl VM {
             }
             Op::Return => return Ok(Flow::Return),
 
-            // ── PREP / CONSENT / CLENCH / RELEASE ───────
+            // ── Capability latches ──────────────────────────────
+            //
+            // PREP/CONSENT are one-shot tokens; CLENCH/RELEASE are
+            // a matched bracketing pair. The asymmetry is the
+            // point: capability is granted once and spent, but
+            // read-only mode is entered and left. RELAX clears
+            // whatever was armed and is the only latch-adjacent op
+            // permitted during a CLENCH (it touches latches, not
+            // the stack).
             Op::Prep => {
                 self.check_unclenched("PREP", span)?;
                 self.prep_armed = true;
@@ -275,7 +341,12 @@ impl VM {
                 self.consent_armed = false;
             }
 
-            // ── INSERT / EXTRACT / FLUSH ────────────────
+            // ── Authorised mutation: INSERT, EXTRACT, FLUSH ─────
+            //
+            // The ops the latches above are for. The latch is
+            // consumed only on success — a PREP followed by an
+            // INSERT that fails its depth check leaves the PREP
+            // armed for the next attempt.
             Op::Insert { depth, value } => {
                 self.check_unclenched("INSERT", span)?;
                 if !self.prep_armed {
@@ -322,10 +393,11 @@ impl VM {
                 self.consent_armed = false;
             }
 
-            // ── EXPAND <n>: raise the stack capacity cap by `n` slots
-            //    above the current depth. The first EXPAND turns the cap
-            //    on; subsequent EXPANDs only raise it (never lower).
-            //    A push past the cap raises OVERFLOW.
+            // ── EXPAND ──────────────────────────────────────────
+            //
+            // First call installs the cap at `depth + n`; later
+            // calls may raise it, never lower it. Programs that
+            // never call EXPAND cannot raise OVERFLOW.
             Op::Expand(n) => {
                 self.check_unclenched("EXPAND", span)?;
                 let target = self.stack.len().saturating_add(*n);
@@ -336,7 +408,13 @@ impl VM {
                 self.stack.reserve(*n);
             }
 
-            // ── INGEST / EVACUATE / RECEIVE ─────────────
+            // ── External I/O ────────────────────────────────────
+            //
+            // EVACUATE has the only nontrivial rule: writing to a
+            // new path is unguarded, but overwriting an existing
+            // file requires CONSENT. Creation is benign,
+            // destruction is not, and the filesystem already knows
+            // the difference.
             Op::IngestFile(path) => {
                 self.check_unclenched("INGEST", span)?;
                 let contents =
@@ -398,13 +476,13 @@ impl VM {
                 self.push(Value::Str(Rc::from(line.as_str())), span)?;
             }
 
-            // ── HOLD [ms]: pause execution ──────────────
-            //    With an INT operand: sleep that many milliseconds, then
-            //    continue. Pure side-effect, stack-neutral.
-            //    Without an operand: read lines from stdin until one equals
-            //    "RESUME", then continue. Pairs with a source-level RESUME
-            //    in another ANAL process (or any tool that writes the
-            //    line). Stack-neutral.
+            // ── HOLD ────────────────────────────────────────────
+            //
+            // `HOLD <ms>` sleeps; bare `HOLD` reads stdin lines
+            // until one is exactly "RESUME". Both flush stdout and
+            // stderr before blocking — a paused program with its
+            // last sentence stuck in a buffer is a bug report
+            // waiting to happen.
             Op::Hold(ms) => {
                 self.check_unclenched("HOLD", span)?;
                 match ms {
@@ -442,12 +520,11 @@ impl VM {
                 }
             }
 
-            // ── RESUME: emit a RESUME signal to stdout ──
-            //    In the single-threaded reference interpreter, RESUME is
-            //    only meaningful as something *another* ANAL process can
-            //    observe. Source-level RESUME writes the line "RESUME"
-            //    to the EXPEL/DISCHARGE channel so a piped peer waiting
-            //    on a bare HOLD can wake up. Stack-neutral.
+            // ── RESUME ──────────────────────────────────────────
+            //
+            // The only primitive whose effect is entirely on the
+            // other side of stdout: writes "RESUME\n" so that a
+            // peer process blocked on a bare HOLD can wake up.
             Op::Resume => {
                 self.check_unclenched("RESUME", span)?;
                 writeln!(out, "RESUME").map_err(|_| io_err("RESUME", span))?;
