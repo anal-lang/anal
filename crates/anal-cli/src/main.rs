@@ -1,5 +1,6 @@
 //! Command-line interface for the ANAL programming language.
 
+mod op_help;
 mod repl;
 
 use std::io::{IsTerminal, Write};

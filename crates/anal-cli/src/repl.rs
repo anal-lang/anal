@@ -27,14 +27,22 @@
 //! and a writer; [`run`] wraps that with `rustyline` for terminal
 //! use. Tests drive `ReplState` directly.
 
+use std::cell::RefCell;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use anal_core::check::Ty;
 use anal_core::{is_unfinished, AnalError, Session, VM};
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::{Config, DefaultEditor};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Config, Context, Editor, Helper};
 
+use crate::op_help::{lookup, meta_names, op_names};
 use crate::Flags;
 
 const BANNER_TITLE: &str = concat!(
@@ -53,12 +61,16 @@ const META_HELP: &str = "\
 Meta-commands (type them at the prompt, with the leading colon):
 
   :help, :?       Show this message.
+  :help <OP>      Print the one-line description of an op.
   :stack, :s      Print the current runtime stack.
   :shape          Print the abstract (type) stack — what the checker sees.
   :passages       List all defined passages.
   :reset          Clear the stack, latches, and every defined passage.
   :load <FILE>    Read a file and execute it in this session.
   :quit, :q       Leave the session. Ctrl-D also exits.
+
+Tab-completion is on. Hit TAB at any token boundary to expand op
+names, meta-commands, or defined passage names.
 
 Anything not beginning with `:` is parsed as ANAL.
 Multi-line constructs (PASSAGE/EXIT, DILATE/CONSTRICT, [ ]) are
@@ -93,6 +105,10 @@ pub struct ReplState {
     /// rendering errors so the diagnostic header is unique per
     /// fragment.
     pub fragment_no: usize,
+    /// Snapshot of currently-defined passage names, shared with the
+    /// rustyline helper so tab-completion picks up new passages as
+    /// the user defines them.
+    pub passages: Rc<RefCell<Vec<String>>>,
 }
 
 impl ReplState {
@@ -103,7 +119,20 @@ impl ReplState {
             flags,
             buffer: String::new(),
             fragment_no: 0,
+            passages: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    /// Refresh the shared passage-name snapshot from the session.
+    /// Cheap: called after every successful fragment.
+    fn refresh_passages(&self) {
+        let names: Vec<String> = self
+            .session
+            .passage_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        *self.passages.borrow_mut() = names;
     }
 
     /// Process one line of REPL input. Writes any output to `out`,
@@ -203,6 +232,11 @@ impl ReplState {
                 return;
             }
         };
+        // The fragment type-checked; a PASSAGE inside it is now
+        // visible to the session. Refresh the completer's snapshot
+        // before we run, so even if execution fails the user can
+        // still tab-complete the name they just defined.
+        self.refresh_passages();
 
         // Use the pluggable-I/O path (`run`, not `execute`) so the
         // REPL controls where program output goes. `RECEIVE` and
@@ -230,6 +264,7 @@ impl ReplState {
             Meta::Help => {
                 let _ = writeln!(out, "{META_HELP}");
             }
+            Meta::HelpOp(name) => print_op_help(&name, out, err),
             Meta::Quit => return LineOutcome::Quit,
             Meta::Stack => print_stack(self.vm.stack(), out),
             Meta::Shape => print_shape(self.session.stack_shape(), out),
@@ -246,6 +281,7 @@ impl ReplState {
             Meta::Reset => {
                 self.session.reset();
                 self.vm.reset();
+                self.refresh_passages();
                 let _ = writeln!(out, "(session reset)");
             }
             Meta::Load(path) => match std::fs::read_to_string(&path) {
@@ -274,7 +310,7 @@ pub fn run(flags: Flags) -> anyhow::Result<()> {
     print_banner();
 
     let config = Config::builder().auto_add_history(true).build();
-    let mut editor = DefaultEditor::with_config(config)?;
+    let mut editor: Editor<AnalHelper, DefaultHistory> = Editor::with_config(config)?;
     let history_path = history_file_path();
     if let Some(path) = history_path.as_ref() {
         // Loading history is best-effort — a missing file is fine
@@ -283,7 +319,11 @@ pub fn run(flags: Flags) -> anyhow::Result<()> {
         let _ = editor.load_history(path);
     }
 
-    let mut state = ReplState::new(flags);
+    let state = ReplState::new(flags);
+    editor.set_helper(Some(AnalHelper {
+        passages: state.passages.clone(),
+    }));
+    let mut state = state;
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
 
@@ -363,6 +403,22 @@ fn print_shape<W: Write>(shape: &[Ty], out: &mut W) {
     let _ = writeln!(out, "[{}]", names.join(", "));
 }
 
+/// Print the doc string for a single op, or report that the name is
+/// unknown. Used by `:help <op>`.
+fn print_op_help<W1: Write, W2: Write>(name: &str, out: &mut W1, err: &mut W2) {
+    match lookup(name) {
+        Some(entry) => {
+            let _ = writeln!(out, "{}  {}", entry.name, entry.doc);
+        }
+        None => {
+            let _ = writeln!(
+                err,
+                "no op named `{name}`. Try `:help` for the meta-command list."
+            );
+        }
+    }
+}
+
 fn ty_name(t: &Ty) -> &'static str {
     match t {
         Ty::Int => "INT",
@@ -392,6 +448,7 @@ fn render_error<W: Write>(
 
 enum Meta {
     Help,
+    HelpOp(String),
     Quit,
     Stack,
     Shape,
@@ -408,7 +465,13 @@ fn parse_meta<W: Write>(line: &str, err: &mut W) -> Option<Meta> {
     let cmd = parts.next()?;
     let rest = parts.next().map(str::trim).unwrap_or("");
     Some(match cmd {
-        "help" | "?" => Meta::Help,
+        "help" | "?" => {
+            if rest.is_empty() {
+                Meta::Help
+            } else {
+                Meta::HelpOp(rest.to_string())
+            }
+        }
         "quit" | "q" | "exit" => Meta::Quit,
         "stack" | "s" => Meta::Stack,
         "shape" => Meta::Shape,
@@ -444,6 +507,136 @@ fn history_file_path() -> Option<PathBuf> {
     }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join(".anal_history"))
+}
+
+// ── Tab completion ────────────────────────────────────────────
+
+/// Rustyline `Helper` for the REPL. Owns the shared snapshot of
+/// passage names so completion picks up new `PASSAGE` definitions
+/// as the session grows.
+pub struct AnalHelper {
+    passages: Rc<RefCell<Vec<String>>>,
+}
+
+impl Completer for AnalHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let names: Vec<String> = self.passages.borrow().clone();
+        Ok(complete_at(line, pos, &names))
+    }
+}
+
+impl Hinter for AnalHelper {
+    type Hint = String;
+}
+impl Highlighter for AnalHelper {}
+impl Validator for AnalHelper {}
+impl Helper for AnalHelper {}
+
+/// Pure completion function. Given the current line, the cursor
+/// position, and the session's passage names, return the start
+/// position of the partial word and the candidate replacements.
+///
+/// Behaviour:
+///   * Empty word, or alphanumeric word with no leading `:`: complete
+///     against ops + passage names.
+///   * Word that starts at column 0 with `:`: complete against
+///     meta-commands.
+///   * Word following `ENTER ` (case-insensitive): bias toward
+///     passage names only.
+///   * After `:load `: defer to rustyline's default (no candidates) so
+///     the user can type a path without interference.
+pub fn complete_at(line: &str, pos: usize, passages: &[String]) -> (usize, Vec<Pair>) {
+    let (start, partial) = token_at(line, pos);
+    let prefix_before = &line[..start];
+    let prefix_trim = prefix_before.trim_start();
+
+    // `:load <path>` — yield no candidates so the user can type a path
+    // unmolested. rustyline still won't insert anything.
+    if prefix_trim.starts_with(":load") && start > prefix_before.find(":load").unwrap_or(0) + 5 {
+        return (start, Vec::new());
+    }
+
+    // A meta-command itself: only when the partial begins the line
+    // (ignoring whitespace) and starts with `:`.
+    if prefix_trim.is_empty() && partial.starts_with(':') {
+        let candidates = filter_prefix(meta_names(), partial);
+        return (start, candidates);
+    }
+
+    // After `ENTER`, only passages are useful.
+    let only_passages = previous_token_eq(prefix_before, "ENTER");
+
+    let mut out: Vec<Pair> = Vec::new();
+    if !only_passages {
+        out.extend(filter_prefix(op_names(), partial));
+    }
+    let passage_strs = passages.iter().map(String::as_str);
+    out.extend(filter_prefix(passage_strs, partial));
+    (start, out)
+}
+
+/// Find the token under (or just before) `pos`. Tokens are runs of
+/// characters that can legally appear in an ANAL identifier or meta
+/// command — letters, digits, `_`, and a leading `:`. Whitespace and
+/// other punctuation break the run.
+fn token_at(line: &str, pos: usize) -> (usize, &str) {
+    let bytes = line.as_bytes();
+    let mut start = pos;
+    while start > 0 {
+        let c = bytes[start - 1];
+        if is_word_byte(c) || (start == 1 && c == b':') {
+            start -= 1;
+            continue;
+        }
+        // Allow `:` only as the very first char of the token.
+        if c == b':' && (start == 1 || !is_word_byte(bytes[start - 2])) {
+            start -= 1;
+            break;
+        }
+        break;
+    }
+    (start, &line[start..pos])
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Whether the token immediately before `prefix_before` (whitespace
+/// stripped) equals `keyword`, case-insensitively.
+fn previous_token_eq(prefix_before: &str, keyword: &str) -> bool {
+    let trimmed = prefix_before.trim_end();
+    let last = trimmed
+        .rsplit(|c: char| !is_word_byte(c as u8))
+        .next()
+        .unwrap_or("");
+    last.eq_ignore_ascii_case(keyword)
+}
+
+fn filter_prefix<'a, I>(names: I, partial: &str) -> Vec<Pair>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let upper = partial.to_ascii_uppercase();
+    names
+        .into_iter()
+        .filter(|n| {
+            // Case-insensitive prefix match. Meta-commands stay
+            // lower-case in source and so we compare leniently.
+            n.to_ascii_uppercase().starts_with(&upper)
+        })
+        .map(|n| Pair {
+            display: n.to_string(),
+            replacement: n.to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -646,6 +839,130 @@ mod tests {
     fn cancel_buffer_returns_false_when_idle() {
         let mut state = ReplState::new(no_flags());
         assert!(!state.cancel_buffer());
+    }
+
+    // ── :help <op> ───────────────────────────────────────
+
+    #[test]
+    fn help_with_op_prints_doc_line() {
+        let (_state, out, err) = drive(&[":help PUSH"]);
+        assert!(out.contains("PUSH"), "stdout: {out:?}");
+        assert!(out.contains("literal"), "doc not printed: {out:?}");
+        assert_eq!(err, "");
+    }
+
+    #[test]
+    fn help_with_op_is_case_insensitive() {
+        let (_state, out, _err) = drive(&[":help push"]);
+        assert!(out.contains("PUSH"));
+    }
+
+    #[test]
+    fn help_with_unknown_op_reports_to_stderr() {
+        let (_state, out, err) = drive(&[":help WIGGLE"]);
+        assert_eq!(out, "");
+        assert!(err.contains("no op named"), "stderr: {err:?}");
+    }
+
+    #[test]
+    fn help_bare_still_prints_meta_list() {
+        let (_state, out, _err) = drive(&[":help"]);
+        assert!(out.contains(":quit"), "stdout: {out:?}");
+        assert!(out.contains(":help <OP>"));
+    }
+
+    // ── Completion ───────────────────────────────────────
+
+    fn complete(line: &str, passages: &[&str]) -> (usize, Vec<String>) {
+        let owned: Vec<String> = passages.iter().map(|s| s.to_string()).collect();
+        let (start, pairs) = complete_at(line, line.len(), &owned);
+        (start, pairs.into_iter().map(|p| p.replacement).collect())
+    }
+
+    #[test]
+    fn empty_prefix_yields_every_op() {
+        let (start, names) = complete(" ", &[]);
+        assert_eq!(start, 1);
+        // sanity: catalogue is large
+        assert!(names.len() > 20, "got {} names", names.len());
+        assert!(names.contains(&"PUSH".to_string()));
+        assert!(names.contains(&"DISCHARGE".to_string()));
+    }
+
+    #[test]
+    fn prefix_filters_ops() {
+        let (_, names) = complete("PU", &[]);
+        assert!(names.contains(&"PUSH".to_string()));
+        assert!(!names.contains(&"POP".to_string()));
+    }
+
+    #[test]
+    fn prefix_is_case_insensitive() {
+        let (_, names) = complete("dis", &[]);
+        assert!(names.contains(&"DISCHARGE".to_string()));
+    }
+
+    #[test]
+    fn leading_colon_completes_meta_commands() {
+        let (start, names) = complete(":h", &[]);
+        assert_eq!(start, 0);
+        assert!(names.iter().any(|n| n == ":help"));
+        assert!(!names.iter().any(|n| n.starts_with("HOLD")));
+    }
+
+    #[test]
+    fn passage_names_appear_in_completion() {
+        let (_, names) = complete("sq", &["square", "double", "trace"]);
+        assert!(names.contains(&"square".to_string()));
+    }
+
+    #[test]
+    fn after_enter_only_passages_are_offered() {
+        let (_, names) = complete("ENTER sq", &["square", "double"]);
+        assert!(names.contains(&"square".to_string()));
+        // No op starts with `sq`, but the rule is stronger: even
+        // overlapping names like `SUB` or `SWAP` should not show up
+        // after ENTER.
+        let (_, names) = complete("ENTER S", &["square"]);
+        assert!(!names.contains(&"SWAP".to_string()), "got {names:?}");
+        assert!(!names.contains(&"SUB".to_string()), "got {names:?}");
+        assert!(names.contains(&"square".to_string()));
+    }
+
+    #[test]
+    fn token_boundary_is_after_a_space() {
+        // Cursor at end of "PUSH 1 D" — the partial is "D", starting
+        // at column 7, not the whole line.
+        let line = "PUSH 1 D";
+        let owned: Vec<String> = Vec::new();
+        let (start, pairs) = complete_at(line, line.len(), &owned);
+        assert_eq!(start, 7);
+        let names: Vec<String> = pairs.into_iter().map(|p| p.replacement).collect();
+        assert!(names.contains(&"DISCHARGE".to_string()));
+        assert!(names.contains(&"DUP".to_string()));
+    }
+
+    #[test]
+    fn completer_picks_up_newly_defined_passage() {
+        // Drive the REPL through a PASSAGE definition; the shared
+        // passage snapshot the helper reads from should reflect it.
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line("PASSAGE square: DUP MUL EXIT", &mut out, &mut err);
+        let snapshot = state.passages.borrow().clone();
+        assert!(snapshot.iter().any(|n| n == "square"), "got {snapshot:?}");
+    }
+
+    #[test]
+    fn reset_clears_completer_snapshot() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line("PASSAGE p: PUSH 1 EXIT", &mut out, &mut err);
+        assert!(!state.passages.borrow().is_empty());
+        state.feed_line(":reset", &mut out, &mut err);
+        assert!(state.passages.borrow().is_empty());
     }
 
     #[test]
