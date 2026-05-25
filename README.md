@@ -11,7 +11,7 @@
 [![CI](https://github.com/1xn/anal/actions/workflows/ci.yml/badge.svg)](https://github.com/1xn/anal/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/1xn/anal?label=release)](https://github.com/1xn/anal/releases/latest)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-informational)](LICENSE)
-[![Spec: v0.1](https://img.shields.io/badge/spec-v0.1-blue)](https://1xn.github.io/anal/)
+[![Spec: v0.2](https://img.shields.io/badge/spec-v0.2-blue)](https://1xn.github.io/anal/)
 
 > *Push-only by design, consent-enforced by default, append-oriented by conviction.*
 
