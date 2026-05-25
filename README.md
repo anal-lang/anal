@@ -87,7 +87,7 @@ irm https://github.com/anal-lang/anal/releases/latest/download/install.ps1 | iex
 
 Or grab a tarball directly from the [releases page](https://github.com/anal-lang/anal/releases/latest) and unpack the `anal` binary onto your `PATH`.
 
-Pin a specific version with `ANAL_VERSION=v0.2.3` (sh) or `$env:ANAL_VERSION='v0.2.3'` (PowerShell) before piping. Change the destination with `ANAL_INSTALL_DIR`.
+By default both scripts install the latest release. Pin a specific version with `ANAL_VERSION=v0.4.2` (sh) or `$env:ANAL_VERSION='v0.4.2'` (PowerShell) before piping. Change the destination with `ANAL_INSTALL_DIR`.
 
 ---
 

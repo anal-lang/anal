@@ -5,7 +5,7 @@
 # SHA-256, and inserts it into your PATH.
 #
 # Environment overrides:
-#   $env:ANAL_VERSION       Tag to install (default: latest, e.g. v0.1.0).
+#   $env:ANAL_VERSION       Tag to install (default: latest release; pin with e.g. v0.4.2).
 #   $env:ANAL_INSTALL_DIR   Destination directory (default: %LOCALAPPDATA%\anal\bin).
 #   $env:ANAL_NO_MODIFY_PATH=1   Skip PATH update.
 

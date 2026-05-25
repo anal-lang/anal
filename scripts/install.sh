@@ -6,7 +6,7 @@
 # SHA-256, and inserts it into your PATH.
 #
 # Environment overrides:
-#   ANAL_VERSION       Tag to install (default: latest, e.g. v0.1.0).
+#   ANAL_VERSION       Tag to install (default: latest release; pin with e.g. v0.4.2).
 #   ANAL_INSTALL_DIR   Destination directory (default: $HOME/.local/bin).
 #   ANAL_NO_MODIFY_PATH=1   Skip PATH-hint message.
 
