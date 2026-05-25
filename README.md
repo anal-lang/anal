@@ -9,7 +9,7 @@
 *A stack-based, strongly-typed programming language with consent-enforced destructive operations.*
 
 [![CI](https://github.com/anal-lang/anal/actions/workflows/ci.yml/badge.svg)](https://github.com/anal-lang/anal/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/anal-lang/anal?label=release)](https://github.com/anal-lang/anal/releases/latest)
+[![Release](https://img.shields.io/badge/release-v0.4.1-blue)](https://github.com/anal-lang/anal/releases/latest)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-informational)](LICENSE)
 [![Spec: v0.4](https://img.shields.io/badge/spec-v0.4-blue)](https://anal-lang.github.io/anal/)
 
