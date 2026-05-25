@@ -127,7 +127,7 @@ Or run interactively:
 anal
 ```
 
-The REPL persists the stack, the latches, and any `PASSAGE` defined during the session. Tab-completion expands op names, meta-commands, and defined passage names. The type checker runs per fragment, so static errors surface line by line. Multi-line constructs (`PASSAGE`/`EXIT`, `[ ]`, `DILATE`/`CONSTRICT`) switch to a continuation prompt automatically. Meta-commands begin with `:` — `:help`, `:help <OP>`, `:stack`, `:shape`, `:passages`, `:reset`, `:load <FILE>`, `:quit`.
+The REPL persists the stack, the latches, and any `PASSAGE` defined during the session. Tab-completion expands op names, meta-commands, and defined passage names. The type checker runs per fragment, so static errors surface line by line. Multi-line constructs (`PASSAGE`/`EXIT`, `[ ]`, `DILATE`/`CONSTRICT`) switch to a continuation prompt automatically. Meta-commands begin with `:` — `:help`, `:help <OP>`, `:stack`, `:shape`, `:passages`, `:trace`, `:reset`, `:load <FILE>`, `:quit`.
 
 ---
 

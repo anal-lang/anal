@@ -65,6 +65,9 @@ Meta-commands (type them at the prompt, with the leading colon):
   :stack, :s      Print the current runtime stack.
   :shape          Print the abstract (type) stack — what the checker sees.
   :passages       List all defined passages.
+  :trace [on|off|toggle]
+                  Print the abstract-stack delta after every fragment.
+                  Bare `:trace` reports the current state.
   :reset          Clear the stack, latches, and every defined passage.
   :load <FILE>    Read a file and execute it in this session.
   :quit, :q       Leave the session. Ctrl-D also exits.
@@ -109,6 +112,9 @@ pub struct ReplState {
     /// rustyline helper so tab-completion picks up new passages as
     /// the user defines them.
     pub passages: Rc<RefCell<Vec<String>>>,
+    /// When true, every successful fragment prints the abstract-stack
+    /// delta (`Δ before → after`) to stderr. Toggled by `:trace`.
+    pub trace: bool,
 }
 
 impl ReplState {
@@ -120,6 +126,7 @@ impl ReplState {
             buffer: String::new(),
             fragment_no: 0,
             passages: Rc::new(RefCell::new(Vec::new())),
+            trace: false,
         }
     }
 
@@ -225,6 +232,11 @@ impl ReplState {
         // each line gets a fair shot.
         self.vm.clear_abort();
 
+        // Snapshot the abstract stack *before* the fragment so
+        // `:trace` can render the shape delta after a successful
+        // check. Cheap — Ty is Copy and stacks stay small.
+        let shape_before: Vec<Ty> = self.session.stack_shape().to_vec();
+
         let program = match self.session.feed(source) {
             Ok(p) => p,
             Err(e) => {
@@ -237,6 +249,10 @@ impl ReplState {
         // before we run, so even if execution fails the user can
         // still tab-complete the name they just defined.
         self.refresh_passages();
+
+        if self.trace {
+            print_shape_delta(&shape_before, self.session.stack_shape(), err);
+        }
 
         // Use the pluggable-I/O path (`run`, not `execute`) so the
         // REPL controls where program output goes. `RECEIVE` and
@@ -283,6 +299,20 @@ impl ReplState {
                 self.vm.reset();
                 self.refresh_passages();
                 let _ = writeln!(out, "(session reset)");
+            }
+            Meta::Trace(None) => {
+                let state = if self.trace { "on" } else { "off" };
+                let _ = writeln!(out, "(trace {state})");
+            }
+            Meta::Trace(Some(want)) => {
+                self.trace = want;
+                let state = if want { "on" } else { "off" };
+                let _ = writeln!(out, "(trace {state})");
+            }
+            Meta::TraceToggle => {
+                self.trace = !self.trace;
+                let state = if self.trace { "on" } else { "off" };
+                let _ = writeln!(out, "(trace {state})");
             }
             Meta::Load(path) => match std::fs::read_to_string(&path) {
                 Ok(source) => {
@@ -394,13 +424,27 @@ fn print_stack<W: Write>(stack: &[anal_core::Value], out: &mut W) {
     let _ = writeln!(out, "[{}]", rendered.join(", "));
 }
 
-fn print_shape<W: Write>(shape: &[Ty], out: &mut W) {
-    if shape.is_empty() {
-        let _ = writeln!(out, "[]");
+/// Render a one-line abstract-stack delta to the trace sink. Quiet
+/// when the shape didn't move at all (the fragment was a no-op for
+/// the checker) — useful so meta-level activity doesn't generate
+/// noise.
+fn print_shape_delta<W: Write>(before: &[Ty], after: &[Ty], out: &mut W) {
+    if before == after {
         return;
     }
+    let _ = writeln!(out, "Δ {} → {}", format_shape(before), format_shape(after));
+}
+
+fn format_shape(shape: &[Ty]) -> String {
+    if shape.is_empty() {
+        return "[]".to_string();
+    }
     let names: Vec<&str> = shape.iter().map(ty_name).collect();
-    let _ = writeln!(out, "[{}]", names.join(", "));
+    format!("[{}]", names.join(", "))
+}
+
+fn print_shape<W: Write>(shape: &[Ty], out: &mut W) {
+    let _ = writeln!(out, "{}", format_shape(shape));
 }
 
 /// Print the doc string for a single op, or report that the name is
@@ -455,6 +499,9 @@ enum Meta {
     Passages,
     Reset,
     Load(PathBuf),
+    /// `None` = report status; `Some(true|false)` = set explicitly.
+    Trace(Option<bool>),
+    TraceToggle,
 }
 
 fn parse_meta<W: Write>(line: &str, err: &mut W) -> Option<Meta> {
@@ -485,6 +532,16 @@ fn parse_meta<W: Write>(line: &str, err: &mut W) -> Option<Meta> {
                 Meta::Load(PathBuf::from(rest))
             }
         }
+        "trace" => match rest.to_ascii_lowercase().as_str() {
+            "" => Meta::Trace(None),
+            "on" | "true" | "1" => Meta::Trace(Some(true)),
+            "off" | "false" | "0" => Meta::Trace(Some(false)),
+            "toggle" => Meta::TraceToggle,
+            other => {
+                let _ = writeln!(err, ":trace expects on|off|toggle (got `{other}`)");
+                Meta::Help
+            }
+        },
         other => {
             let _ = writeln!(err, "unknown meta-command `:{other}` (try `:help`)");
             Meta::Help
@@ -963,6 +1020,112 @@ mod tests {
         assert!(!state.passages.borrow().is_empty());
         state.feed_line(":reset", &mut out, &mut err);
         assert!(state.passages.borrow().is_empty());
+    }
+
+    // ── :trace ───────────────────────────────────────────
+
+    #[test]
+    fn trace_defaults_off_and_no_delta_is_printed() {
+        let (_state, _out, err) = drive(&["PUSH 1"]);
+        assert!(!err.contains("Δ"), "stderr leaked a delta: {err:?}");
+    }
+
+    #[test]
+    fn trace_on_prints_delta_after_fragment() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace on", &mut out, &mut err);
+        state.feed_line("PUSH 1 PUSH 2", &mut out, &mut err);
+        let err_s = String::from_utf8(err).unwrap();
+        assert!(err_s.contains("Δ [] → [INT, INT]"), "stderr: {err_s:?}");
+    }
+
+    #[test]
+    fn trace_delta_renders_arithmetic_collapse() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace on", &mut out, &mut err);
+        state.feed_line("PUSH 1 PUSH 2", &mut out, &mut err);
+        err.clear();
+        state.feed_line("ADD", &mut out, &mut err);
+        let err_s = String::from_utf8(err).unwrap();
+        assert!(err_s.contains("Δ [INT, INT] → [INT]"), "stderr: {err_s:?}");
+    }
+
+    #[test]
+    fn trace_is_quiet_when_shape_did_not_move() {
+        // A passage definition leaves the abstract stack untouched —
+        // nothing to report.
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace on", &mut out, &mut err);
+        err.clear();
+        state.feed_line("PASSAGE p: PUSH 1 EXIT", &mut out, &mut err);
+        let err_s = String::from_utf8(err).unwrap();
+        assert!(!err_s.contains("Δ"), "stderr: {err_s:?}");
+    }
+
+    #[test]
+    fn trace_off_silences_subsequent_fragments() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace on", &mut out, &mut err);
+        state.feed_line(":trace off", &mut out, &mut err);
+        err.clear();
+        state.feed_line("PUSH 1", &mut out, &mut err);
+        let err_s = String::from_utf8(err).unwrap();
+        assert!(!err_s.contains("Δ"), "stderr: {err_s:?}");
+    }
+
+    #[test]
+    fn trace_toggle_flips_state() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert!(!state.trace);
+        state.feed_line(":trace toggle", &mut out, &mut err);
+        assert!(state.trace);
+        state.feed_line(":trace toggle", &mut out, &mut err);
+        assert!(!state.trace);
+    }
+
+    #[test]
+    fn trace_bare_reports_status() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace", &mut out, &mut err);
+        let out_s = String::from_utf8(out).unwrap();
+        assert!(out_s.contains("(trace off)"), "stdout: {out_s:?}");
+    }
+
+    #[test]
+    fn trace_with_garbage_argument_reports_error() {
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace maybe", &mut out, &mut err);
+        let err_s = String::from_utf8(err).unwrap();
+        assert!(err_s.contains(":trace expects"), "stderr: {err_s:?}");
+        // and trace stayed off
+        assert!(!state.trace);
+    }
+
+    #[test]
+    fn trace_does_not_fire_on_check_failure() {
+        // Fragment that fails to type-check must not produce a delta.
+        let mut state = ReplState::new(no_flags());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        state.feed_line(":trace on", &mut out, &mut err);
+        err.clear();
+        state.feed_line("ADD", &mut out, &mut err); // pops from empty stack
+        let err_s = String::from_utf8(err).unwrap();
+        assert!(!err_s.contains("Δ"), "stderr: {err_s:?}");
     }
 
     #[test]

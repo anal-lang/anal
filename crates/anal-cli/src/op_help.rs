@@ -97,6 +97,10 @@ pub const METAS: &[OpDoc] = &[
         doc: "List all defined passages.",
     },
     OpDoc {
+        name: ":trace",
+        doc: ":trace [on|off|toggle]. Show the abstract-stack delta after every fragment.",
+    },
+    OpDoc {
         name: ":reset",
         doc: "Clear the stack, latches, and every defined passage.",
     },
