@@ -191,8 +191,12 @@ impl AnalError {
             AnalError::Lockdown { .. } => {
                 Some("`RELEASE` the stack first, or move this op outside the CLENCH".into())
             }
-            AnalError::Rejection { .. } => {
-                Some("use `TO_INT`, `TO_FLOAT`, or `TO_STRING` to convert explicitly".into())
+            AnalError::Rejection { expected, .. } => {
+                if is_type_rejection(expected) {
+                    Some("use `TO_INT`, `TO_FLOAT`, or `TO_STRING` to convert explicitly".into())
+                } else {
+                    None
+                }
             }
             AnalError::Casing { keyword, .. } => {
                 Some(format!("write `{}`", keyword.to_uppercase()))
@@ -221,8 +225,12 @@ impl AnalError {
                 "write operations are forbidden while the stack is clenched. PROBE and EXPEL remain available.",
             ),
             AnalError::PenetrationDepth { .. } => Some("you cannot reach below the bottom."),
-            AnalError::Rejection { .. } => {
-                Some("ANAL is strongly typed. Implicit conversion is not offered.")
+            AnalError::Rejection { expected, .. } => {
+                if is_type_rejection(expected) {
+                    Some("ANAL is strongly typed. Implicit conversion is not offered.")
+                } else {
+                    None
+                }
             }
             AnalError::PrematureRelease { .. } => Some("there is nothing to release."),
             AnalError::Casing { .. } => Some("ANAL is case-sensitive. Keywords are uppercase."),
@@ -231,4 +239,19 @@ impl AnalError {
             _ => None,
         }
     }
+}
+
+/// Is this REJECTION caused by a type/coercion mismatch (TO_INT/TO_FLOAT/
+/// TO_STRING territory), or by an I/O-shaped failure (file, stdin, signal,
+/// divisor)? The former gets a type-coercion help/note; the latter does not.
+fn is_type_rejection(expected: &str) -> bool {
+    !matches!(
+        expected,
+        "readable file"
+            | "writable file path"
+            | "readable stdin"
+            | "input line"
+            | "non-zero divisor"
+            | "RESUME signal on stdin"
+    )
 }
