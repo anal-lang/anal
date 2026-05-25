@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "anal-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anal-core",
  "anyhow",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "anal-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ariadne",
  "blake3",
