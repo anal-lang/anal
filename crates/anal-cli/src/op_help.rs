@@ -21,6 +21,9 @@ pub const OPS: &[OpDoc] = &[
     OpDoc { name: "POP",       doc: "Discard the top of the stack." },
     OpDoc { name: "DUP",       doc: "Duplicate the top of the stack." },
     OpDoc { name: "SWAP",      doc: "Exchange the top two values." },
+    OpDoc { name: "OVER",      doc: "Copy the second-from-top value to the top: (a b -- a b a)." },
+    OpDoc { name: "ROT",       doc: "Rotate the third-from-top value to the top: (a b c -- b c a)." },
+    OpDoc { name: "NIP",       doc: "Drop the second-from-top value: (a b -- b). Equivalent to SWAP POP." },
     OpDoc { name: "DEPTH",     doc: "Push the current stack depth as an INT." },
     OpDoc { name: "PROBE",     doc: "Print the top of the stack to stderr without removing it." },
     OpDoc { name: "INSERT",    doc: "INSERT <depth> <value>. Insert below the top. Requires PREP." },
@@ -38,11 +41,27 @@ pub const OPS: &[OpDoc] = &[
     OpDoc { name: "RESUME",    doc: "Sent on stdin to a HOLDing program to release it. Not a source-level op." },
 
     // ── I/O ───────────────────────────────────────────
-    OpDoc { name: "EXPEL",     doc: "Print the top of the stack to stdout, no newline, and POP." },
-    OpDoc { name: "DISCHARGE", doc: "Print the top of the stack to stdout with a newline, and POP." },
-    OpDoc { name: "RECEIVE",   doc: "Read one line from stdin and push it as a STRING (newline stripped)." },
-    OpDoc { name: "INGEST",    doc: "INGEST \"<path>\". Read the file and push its contents as a STRING." },
-    OpDoc { name: "EVACUATE",  doc: "EVACUATE \"<path>\". Write the top of the stack to the file. Requires CONSENT if it exists." },
+    OpDoc { name: "EXPEL",       doc: "Print the top of the stack to stdout, no newline, and POP." },
+    OpDoc { name: "DISCHARGE",   doc: "Print the top of the stack to stdout with a newline, and POP." },
+    OpDoc { name: "RECEIVE",     doc: "Read one line from stdin and push it as a STRING (newline stripped)." },
+    OpDoc { name: "RECEIVE_BYTE", doc: "Read one raw byte from stdin and push it as an INT (0..=255), or -1 on EOF." },
+    OpDoc { name: "EMIT_BYTE",   doc: "Pop an INT in 0..=255 and write it to stdout as a single raw byte." },
+    OpDoc { name: "INGEST",      doc: "INGEST \"<path>\". Read the file and push its contents as a STRING. Gated by `read` capability under --hard." },
+    OpDoc { name: "EVACUATE",    doc: "EVACUATE \"<path>\". Write the top of the stack to the file. Requires CONSENT if it exists; gated by `write` capability under --hard." },
+    OpDoc { name: "REQUEST",     doc: "Pop a STRING kind and a STRING target; push a BOOL grant. Kinds: \"read\", \"write\", \"net\". Prompts under --hard, auto-grants in soft mode." },
+
+    // ── String inspection ─────────────────────────────
+    OpDoc { name: "STRLEN",    doc: "Pop a STRING and push its byte length as an INT." },
+    OpDoc { name: "CHARAT",    doc: "Pop an INT index and a STRING; push the byte at that index as an INT in 0..=255." },
+    OpDoc { name: "SUBSTR",    doc: "Pop an INT length, INT start, and STRING; push the substring of length bytes from start." },
+
+    // ── External storage (CAVITY) ─────────────────────
+    OpDoc { name: "BUFFER",    doc: "BUFFER <n>. Allocate a CAVITY of <n> INT cells, or bare BUFFER to take the size from the stack." },
+    OpDoc { name: "BUFGET",    doc: "Pop an INT index; read the cell of the CAVITY beneath it and push the INT. CAVITY remains." },
+    OpDoc { name: "BUFSET",    doc: "Pop an INT value and an INT index; write to the CAVITY beneath. Requires PREP and CONSENT." },
+    OpDoc { name: "BUFLEN",    doc: "Push the cell count of the CAVITY on top of the stack as an INT. CAVITY remains." },
+    OpDoc { name: "LOAD",      doc: "LOAD <i>. Read cell <i> of the CAVITY on top and push the INT. CAVITY remains." },
+    OpDoc { name: "STORE",     doc: "STORE <i>. Pop an INT and write it to cell <i> of the CAVITY beneath. Requires PREP and CONSENT." },
 
     // ── Flow ──────────────────────────────────────────
     OpDoc { name: "DILATE",    doc: "Open a loop. Pop a BOOL each iteration; CONSTRICT closes the loop." },
@@ -162,9 +181,10 @@ mod tests {
 
     #[test]
     fn lookup_finds_meta_with_or_without_colon() {
-        assert_eq!(lookup(":load").map(|o| o.name), Some(":load"));
-        assert_eq!(lookup("load").map(|o| o.name), None); // bare `load` is not an op
-        assert_eq!(lookup(":LOAD").map(|o| o.name), Some(":load"));
+        assert_eq!(lookup(":reset").map(|o| o.name), Some(":reset"));
+        // Bare `reset` is not an op — meta-commands need their colon.
+        assert_eq!(lookup("reset").map(|o| o.name), None);
+        assert_eq!(lookup(":RESET").map(|o| o.name), Some(":reset"));
     }
 
     #[test]
@@ -174,19 +194,24 @@ mod tests {
 
     #[test]
     fn catalogue_covers_every_lexer_keyword() {
-        // Spot-check the keywords that the lexer actually recognises
-        // as ops. If a new op lands in the lexer, this test reminds
-        // us to document it here.
+        // Every op-shaped keyword the lexer recognises. Keep in sync
+        // with the `#[token("...")]` rules in crates/anal-core/src/token.rs;
+        // when a new op lands there, add it here AND to OPS above.
         for kw in [
+            // stack
             "PUSH",
             "POP",
             "DUP",
             "SWAP",
+            "OVER",
+            "ROT",
+            "NIP",
             "DEPTH",
             "PROBE",
             "INSERT",
             "EXTRACT",
             "FLUSH",
+            // consent / state
             "PREP",
             "CONSENT",
             "RELAX",
@@ -195,11 +220,27 @@ mod tests {
             "EXPAND",
             "HOLD",
             "RESUME",
+            // I/O
             "EXPEL",
             "DISCHARGE",
             "RECEIVE",
+            "RECEIVE_BYTE",
+            "EMIT_BYTE",
             "INGEST",
             "EVACUATE",
+            "REQUEST",
+            // string inspection
+            "STRLEN",
+            "CHARAT",
+            "SUBSTR",
+            // external storage
+            "BUFFER",
+            "BUFGET",
+            "BUFSET",
+            "BUFLEN",
+            "LOAD",
+            "STORE",
+            // flow
             "DILATE",
             "CONSTRICT",
             "IF_TIGHT",
@@ -208,6 +249,7 @@ mod tests {
             "ENTER",
             "EXIT",
             "ABORT",
+            // arithmetic / comparison
             "ADD",
             "SUB",
             "MUL",
@@ -219,9 +261,11 @@ mod tests {
             "LTE",
             "GTE",
             "NOT",
+            // conversion
             "TO_INT",
             "TO_FLOAT",
             "TO_STRING",
+            // bool literals
             "TRUE",
             "FALSE",
         ] {
