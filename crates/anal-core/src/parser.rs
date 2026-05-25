@@ -51,6 +51,68 @@ pub fn compile(source: &str) -> Result<Program, AnalError> {
     Ok(program)
 }
 
+/// Output of [`compile_fragment`]: the fragment's main bytecode and
+/// any new passages it declared.
+pub struct Fragment {
+    /// Bytecode for the fragment's top-level statements.
+    pub main: Vec<Instr>,
+    /// Newly-defined passages from this fragment, keyed by name.
+    pub passages: HashMap<String, Rc<[Instr]>>,
+}
+
+/// Lex and parse a REPL fragment — any interleaving of statements and
+/// `PASSAGE` declarations, with no header. The type check is *not*
+/// performed here; callers (typically [`crate::Session`]) run the
+/// incremental checker against their own persistent abstract stack.
+pub fn compile_fragment(source: &str) -> Result<Fragment, AnalError> {
+    let tokens = crate::lexer::lex(source)?;
+    let mut p = Parser::new(&tokens);
+    p.parse_fragment()?;
+    let passages = p
+        .passages
+        .into_iter()
+        .map(|(name, body)| (name, Rc::from(body.into_boxed_slice())))
+        .collect();
+    Ok(Fragment {
+        main: p.instrs,
+        passages,
+    })
+}
+
+/// Quick syntactic check: does `source` end with an unclosed block?
+///
+/// Used by the REPL to decide whether to switch to a continuation
+/// prompt after a line is entered. Counts opens vs. closes for
+/// `PASSAGE`/`EXIT`, `[`/`]`, and `DILATE`/`CONSTRICT`. A lex error
+/// is treated as "not unfinished" so the REPL surfaces the real error
+/// rather than silently swallowing the line.
+///
+/// This is a lightweight syntactic guess — it does *not* run the
+/// full parser. A buffer that looks balanced here may still fail to
+/// parse for other reasons; that is fine, the REPL reports those
+/// errors normally.
+pub fn is_unfinished(source: &str) -> bool {
+    use crate::token::Token;
+    let Ok(tokens) = crate::lexer::lex(source) else {
+        return false;
+    };
+    let mut passage_depth: i32 = 0;
+    let mut bracket_depth: i32 = 0;
+    let mut dilate_depth: i32 = 0;
+    for t in &tokens {
+        match &t.node {
+            Token::Passage => passage_depth += 1,
+            Token::Exit => passage_depth -= 1,
+            Token::LBracket => bracket_depth += 1,
+            Token::RBracket => bracket_depth -= 1,
+            Token::Dilate => dilate_depth += 1,
+            Token::Constrict => dilate_depth -= 1,
+            _ => {}
+        }
+    }
+    passage_depth > 0 || bracket_depth > 0 || dilate_depth > 0
+}
+
 struct Parser<'a> {
     tokens: &'a [Spanned<Token>],
     pos: usize,
@@ -94,6 +156,27 @@ impl<'a> Parser<'a> {
         }
         while self.peek_kind().is_some() {
             self.parse_statement()?;
+        }
+        if let Some((jump_addr, _)) = self.loop_stack.last() {
+            return Err(AnalError::Rupture {
+                span: self.instrs[*jump_addr].span,
+            });
+        }
+        Ok(())
+    }
+
+    /// Fragment-mode parsing for the REPL. Accepts any interleaving of
+    /// `PASSAGE` declarations and statements at the top level — no
+    /// header, no enforced ordering. Statements accumulate into
+    /// `self.instrs` (the fragment's main body); each `PASSAGE` adds
+    /// to `self.passages`.
+    fn parse_fragment(&mut self) -> Result<(), AnalError> {
+        while self.peek_kind().is_some() {
+            if matches!(self.peek_kind(), Some(Token::Passage)) {
+                self.parse_passage()?;
+            } else {
+                self.parse_statement()?;
+            }
         }
         if let Some((jump_addr, _)) = self.loop_stack.last() {
             return Err(AnalError::Rupture {
@@ -657,5 +740,40 @@ DISCHARGE"#,
     fn rupture_error_for_unclosed_dilate() {
         let err = compile("DILATE PUSH 1").unwrap_err();
         assert!(matches!(err, AnalError::Rupture { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn is_unfinished_detects_open_passage() {
+        assert!(is_unfinished("PASSAGE p: PUSH 1"));
+        assert!(!is_unfinished("PASSAGE p: PUSH 1 EXIT"));
+    }
+
+    #[test]
+    fn is_unfinished_detects_open_bracket() {
+        assert!(is_unfinished("PUSH 1 IF_TIGHT [ PUSH 2"));
+        assert!(!is_unfinished("PUSH 1 IF_TIGHT [ PUSH 2 ]"));
+    }
+
+    #[test]
+    fn is_unfinished_detects_open_dilate() {
+        assert!(is_unfinished("PUSH 1 DILATE PUSH 2"));
+        assert!(!is_unfinished("PUSH 1 DILATE PUSH 2 CONSTRICT"));
+    }
+
+    #[test]
+    fn is_unfinished_nested() {
+        assert!(is_unfinished("PASSAGE p: PUSH 1 IF_TIGHT ["));
+        assert!(!is_unfinished("PASSAGE p: PUSH 1 IF_TIGHT [ ] EXIT"));
+    }
+
+    #[test]
+    fn is_unfinished_complete_program() {
+        assert!(!is_unfinished("PUSH 1 PUSH 2 ADD DISCHARGE"));
+    }
+
+    #[test]
+    fn is_unfinished_empty_and_whitespace() {
+        assert!(!is_unfinished(""));
+        assert!(!is_unfinished("   \n\t  "));
     }
 }

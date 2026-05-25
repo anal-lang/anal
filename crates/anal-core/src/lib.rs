@@ -23,13 +23,15 @@ pub mod error;
 pub mod lexer;
 pub mod op;
 pub mod parser;
+pub mod session;
 pub mod token;
 pub mod value;
 pub mod vm;
 
 pub use error::AnalError;
 pub use op::{Instr, Op, Program};
-pub use parser::compile;
+pub use parser::{compile, compile_fragment, is_unfinished, Fragment};
+pub use session::Session;
 pub use token::Span;
 pub use value::Value;
 pub use vm::VM;

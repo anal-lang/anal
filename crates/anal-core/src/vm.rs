@@ -89,6 +89,49 @@ impl VM {
         }
     }
 
+    /// Current runtime stack (top of stack last). Exposed for the REPL
+    /// and other inspection tools; the VM itself does not read this.
+    pub fn stack(&self) -> &[Value] {
+        &self.stack
+    }
+
+    /// Whether `PREP` is currently armed (a one-shot token waiting for
+    /// the next `INSERT`).
+    pub fn prep_armed(&self) -> bool {
+        self.prep_armed
+    }
+
+    /// Whether `CONSENT` is currently armed (a one-shot token waiting
+    /// for the next `EXTRACT`, `FLUSH`, or overwriting `EVACUATE`).
+    pub fn consent_armed(&self) -> bool {
+        self.consent_armed
+    }
+
+    /// Number of unmatched `CLENCH`es. Non-zero means the stack is
+    /// frozen against mutation.
+    pub fn clench_depth(&self) -> u32 {
+        self.clench_depth
+    }
+
+    /// Clear the sticky `ABORT` flag. The REPL calls this between
+    /// fragments so one `ABORT` does not silently terminate every
+    /// subsequent line of the session.
+    pub fn clear_abort(&mut self) {
+        self.aborted = false;
+    }
+
+    /// Reset all VM state: empty the stack, clear every latch, drop
+    /// the capacity cap, clear the abort flag. Used by the REPL's
+    /// `:reset` meta-command.
+    pub fn reset(&mut self) {
+        self.stack.clear();
+        self.prep_armed = false;
+        self.consent_armed = false;
+        self.clench_depth = 0;
+        self.aborted = false;
+        self.capacity = None;
+    }
+
     /// Execute against the process stdin / stdout / stderr.
     pub fn execute(&mut self, program: &Program) -> Result<(), AnalError> {
         let stdin = io::stdin();

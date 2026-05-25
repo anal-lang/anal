@@ -102,6 +102,32 @@ pub fn check_program(program: &Program) -> Result<(), AnalError> {
     Ok(())
 }
 
+/// Incremental check used by the REPL: walks `code` against an existing
+/// `stack` (mutated in place) and the supplied `passages` table.
+///
+/// On success, `stack` reflects the abstract stack after running the
+/// fragment, so the next fragment can be checked against it. On failure,
+/// `stack` is restored to its pre-fragment shape — the REPL convention
+/// is that a rejected line changes nothing.
+pub fn check_fragment(
+    code: &[Instr],
+    passages: &HashMap<String, std::rc::Rc<[Instr]>>,
+    stack: &mut Vec<Ty>,
+) -> Result<(), AnalError> {
+    let snapshot = stack.clone();
+    let mut ctx = Ctx {
+        passages,
+        on_stack: HashSet::new(),
+    };
+    match ctx.check_block(code, stack) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            *stack = snapshot;
+            Err(e)
+        }
+    }
+}
+
 /// Shared context for a single check pass. Holds the passage table and a
 /// recursion-guard set so a cyclic `ENTER` doesn't blow the call stack.
 struct Ctx<'a> {
