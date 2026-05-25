@@ -562,7 +562,7 @@ footer {
     <span class="tag">strongly typed</span>
     <span class="tag">no pull requests</span>
     <span class="tag">consent enforced</span>
-    <span class="tag">turing complete*</span>
+    <span class="tag">turing complete</span>
     <span class="tag">.anal · .sph</span>
   </div>
 </div>
@@ -1649,6 +1649,11 @@ footer {
   <div class="faq-item">
     <div class="faq-q">Is ANAL production-ready?</div>
     <div class="faq-a">ANAL v1.0 is considered stable. The specification is frozen. Several organisations use ANAL in production and prefer not to say so publicly. We respect this.</div>
+  </div>
+
+  <div class="faq-item">
+    <div class="faq-q">Is ANAL Turing-complete?</div>
+    <div class="faq-a">Yes. Runtime-sized <code>BUFFER</code>, indexed <code>BUFGET</code>/<code>BUFSET</code>, and unbounded <code>DILATE</code> loops cover all three requirements. The Collatz interpreter at <a href="https://github.com/anal-lang/anal/blob/main/examples/collatz.anal"><code>examples/collatz.anal</code></a> records its trajectory into a CAVITY whose size came from the input — the requirement for strict completeness. Bounded earlier; strict since v0.3.</div>
   </div>
 </div>
 

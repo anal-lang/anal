@@ -2,7 +2,7 @@
   "name": "vscode-anal",
   "displayName": "ANAL",
   "description": "Syntax highlighting and language configuration for the ANAL programming language.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "anal-lang",
   "license": "MIT",
   "repository": {

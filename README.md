@@ -107,6 +107,7 @@ The [`examples/`](examples/) directory contains the canonical demonstrations. Al
 | [`echo.anal`](examples/echo.anal) | The minimal `RECEIVE` / `DISCHARGE` round-trip. |
 | [`expand.anal`](examples/expand.anal) | `EXPAND` reserves capacity. Push past it and the runtime raises `OVERFLOW`. |
 | [`hold.anal`](examples/hold.anal) | `HOLD <ms>` pauses execution. Bare `HOLD` waits for a `RESUME` line on stdin. |
+| [`collatz.anal`](examples/collatz.anal) | The Collatz trajectory recorded into a runtime-sized `CAVITY`. The v0.3 acceptance test, and the proof that ANAL is Turing-complete. |
 | [`bad.anal`](examples/bad.anal) | What a `TIGHTNESS` looks like. Run it on purpose. |
 
 Run any of them:
