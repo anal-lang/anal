@@ -861,6 +861,12 @@ footer {
         </td>
       </tr>
       <tr>
+        <td><span class="cmd-kw">REQUEST</span></td>
+        <td class="cmd-desc">POP a STRING <code>kind</code> and a STRING <code>target</code>; PUSH a BOOL indicating whether the user grants the capability. Recognised kinds: <code>"read"</code>, <code>"write"</code>, <code>"net"</code>. <span class="req req-safe">safe in soft mode</span>
+          <div class="cmd-note">In soft mode (the default), pushes TRUE without prompting. In <code>--hard</code> mode, prompts the user on stderr and reads the reply from stdin. See <a href="#hard">§12 Hard Mode</a>.</div>
+        </td>
+      </tr>
+      <tr>
         <td><span class="cmd-kw">RECEIVE_BYTE</span></td>
         <td class="cmd-desc">Read one raw byte from stdin and PUSH it as an INT in the range 0–255. PUSHes <code>-1</code> on end-of-input.
           <div class="cmd-note">Use when reading binary or single-character streams. <code>RECEIVE</code> is for prompts; <code>RECEIVE_BYTE</code> is for filters.</div>

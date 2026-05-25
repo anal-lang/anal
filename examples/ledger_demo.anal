@@ -1,0 +1,52 @@
+; ledger_demo.anal — a short destructive sequence, designed to be
+; recorded with --ledger and replayed with anal audit.
+;
+;   $ anal run --ledger demo.sphlog examples/ledger_demo.anal
+;   ...program output...
+;
+;   $ anal audit demo.sphlog examples/ledger_demo.anal
+;   ✓ demo.sphlog — 4 record(s) verified against examples/ledger_demo.anal.
+;
+; Four destructive ops fire: two INSERTs (PREP), one EXTRACT (CONSENT),
+; one FLUSH (CONSENT). Run without --ledger and the program behaves
+; identically — the ledger is opt-in.
+;
+; The audit confirms three things:
+;   1. The ledger's recorded source_hash matches the source.
+;   2. The hash chain has not been edited since the run.
+;   3. Each record's (span, op) matches a destructive op in the source.
+
+ANAL "ledger_demo" VERSION 1
+
+PUSH 10
+PUSH 20
+PUSH 30
+
+; First destructive op: insert a value at depth 2.
+PREP
+INSERT 2 15
+; Stack: [10, 15, 20, 30]
+
+; Second: insert another at the top boundary.
+PREP
+INSERT 0 99
+; Stack: [10, 15, 20, 30, 99]
+
+; Third: remove the value at depth 2 (originally 20).
+CONSENT
+EXTRACT 2
+; Stack: [10, 15, 30, 99]
+
+PUSH "Before flush:"
+DISCHARGE
+DEPTH
+DISCHARGE
+
+; Fourth: clear the entire stack.
+CONSENT
+FLUSH
+
+PUSH "After flush:"
+DISCHARGE
+DEPTH
+DISCHARGE

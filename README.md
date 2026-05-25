@@ -108,6 +108,8 @@ The [`examples/`](examples/) directory contains the canonical demonstrations. Al
 | [`expand.anal`](examples/expand.anal) | `EXPAND` reserves capacity. Push past it and the runtime raises `OVERFLOW`. |
 | [`hold.anal`](examples/hold.anal) | `HOLD <ms>` pauses execution. Bare `HOLD` waits for a `RESUME` line on stdin. |
 | [`collatz.anal`](examples/collatz.anal) | The Collatz trajectory recorded into a runtime-sized `CAVITY`. The v0.3 acceptance test, and the proof that ANAL is Turing-complete. |
+| [`hard_mode.anal`](examples/hard_mode.anal) | `REQUEST` a `read` capability, then `INGEST` only if granted. Run with `--hard` to see the prompt. |
+| [`ledger_demo.anal`](examples/ledger_demo.anal) | Four destructive ops in sequence, designed to be recorded with `--ledger` and replayed with `anal audit`. |
 | [`bad.anal`](examples/bad.anal) | What a `TIGHTNESS` looks like. Run it on purpose. |
 
 Run any of them:

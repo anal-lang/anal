@@ -1,0 +1,41 @@
+; hard_mode.anal — capability prompts in --hard mode.
+;
+; Asks the user for read access to this very file, then either prints
+; its contents or prints a polite denial. The same program runs in
+; soft mode (no prompt, REQUEST trivially grants).
+;
+;   $ anal run --hard examples/hard_mode.anal
+;   ANAL requests capability: READ "examples/hard_mode.anal"
+;     Grant? (yes / no / always)
+;   yes
+;   ; hard_mode.anal — capability prompts in --hard mode.
+;   ...
+;
+;   $ anal run --hard examples/hard_mode.anal
+;   ANAL requests capability: READ "examples/hard_mode.anal"
+;     Grant? (yes / no / always)
+;   no
+;   Permission denied. Carrying on without it.
+;
+; In --hard mode, INGEST without an authorising REQUEST raises
+; OUTSIDE (E019) before the filesystem is touched.
+
+ANAL "hard_mode" VERSION 1
+
+PUSH "examples/hard_mode.anal"
+PUSH "read"
+REQUEST
+
+; DUP the grant BOOL so both arms can consume it.
+DUP
+
+IF_TIGHT [
+  INGEST "examples/hard_mode.anal"
+  DISCHARGE
+]
+
+NOT
+IF_TIGHT [
+  PUSH "Permission denied. Carrying on without it."
+  DISCHARGE
+]

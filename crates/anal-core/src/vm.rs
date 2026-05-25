@@ -53,13 +53,23 @@ pub type BoxedLedger = LedgerSink<Box<dyn Write>>;
 /// the corresponding granted set; an op against a target not in its
 /// set raises `Outside` (E019). `REQUEST` is the only way to add to
 /// these sets at runtime; there is no command-line pre-grant.
+///
+/// Each kind tracks two sets: `_once` for single-use grants (the user
+/// said `yes` — capability is consumed by the next matching op, the
+/// same one-shot shape as `PREP` and `CONSENT`) and `_always` for
+/// persistent grants (the user said `always` — capability lives for
+/// the rest of the run).
 #[derive(Debug, Default, Clone)]
 pub struct Capabilities {
     pub hard_mode: bool,
-    /// Targets the user has authorised for `read` (used by `INGEST`).
-    pub reads: HashSet<String>,
-    /// Targets the user has authorised for `write` (used by `EVACUATE`).
-    pub writes: HashSet<String>,
+    /// One-shot read targets. Consumed by the next matching `INGEST`.
+    pub reads_once: HashSet<String>,
+    /// Persistent read targets. Survive across uses.
+    pub reads_always: HashSet<String>,
+    /// One-shot write targets. Consumed by the next matching `EVACUATE`.
+    pub writes_once: HashSet<String>,
+    /// Persistent write targets. Survive across uses.
+    pub writes_always: HashSet<String>,
     /// Targets the user has authorised for `net`. No op consumes this
     /// yet — network primitives are a planned follow-up. Defined now so
     /// programs can declare their network reach in advance.
@@ -74,11 +84,27 @@ impl Capabilities {
     }
 
     fn allows_read(&self, target: &str) -> bool {
-        !self.hard_mode || self.reads.contains(target)
+        !self.hard_mode || self.reads_always.contains(target) || self.reads_once.contains(target)
     }
 
     fn allows_write(&self, target: &str) -> bool {
-        !self.hard_mode || self.writes.contains(target)
+        !self.hard_mode || self.writes_always.contains(target) || self.writes_once.contains(target)
+    }
+
+    /// Consume a one-shot read grant if one exists for `target`.
+    /// Persistent grants are never consumed. Called from `INGEST` after
+    /// the file read succeeds.
+    fn consume_read(&mut self, target: &str) {
+        if !self.reads_always.contains(target) {
+            self.reads_once.remove(target);
+        }
+    }
+
+    /// Consume a one-shot write grant if one exists. See `consume_read`.
+    fn consume_write(&mut self, target: &str) {
+        if !self.writes_always.contains(target) {
+            self.writes_once.remove(target);
+        }
     }
 }
 
@@ -607,6 +633,7 @@ impl VM {
                         found: format!("INGEST: {e}"),
                         span,
                     })?;
+                self.capabilities.consume_read(path);
                 self.push(Value::Str(Rc::from(contents.as_str())), span)?;
             }
             Op::Evacuate(path) => {
@@ -646,6 +673,7 @@ impl VM {
                     found: format!("EVACUATE: {e}"),
                     span,
                 })?;
+                self.capabilities.consume_write(path);
                 // Only the destructive (overwrite) path is logged. A
                 // creating EVACUATE writes a new file and needs no
                 // CONSENT — the ledger records consent-bearing acts only.
@@ -679,7 +707,11 @@ impl VM {
                 while matches!(line.chars().last(), Some('\n' | '\r')) {
                     line.pop();
                 }
-                self.push(Value::Str(Rc::from(line.as_str())), span)?;
+                // Strip a leading UTF-8 BOM if present — Windows
+                // PowerShell prepends one to piped input, which would
+                // otherwise leak into every program reading from stdin.
+                let trimmed = line.strip_prefix('\u{FEFF}').unwrap_or(&line);
+                self.push(Value::Str(Rc::from(trimmed)), span)?;
             }
 
             // ── REQUEST — capability grant (--hard mode) ────────
@@ -770,9 +802,12 @@ impl VM {
                         let stripped = answer.trim_start_matches('\u{FEFF}').trim();
                         let reply = stripped.to_ascii_lowercase();
                         match reply.as_str() {
-                            "yes" | "y" => true,
+                            "yes" | "y" => {
+                                self.grant_once(kind_str, target.to_string());
+                                true
+                            }
                             "always" | "a" => {
-                                self.grant_capability(kind_str, target.to_string());
+                                self.grant_always(kind_str, target.to_string());
                                 true
                             }
                             _ => false,
@@ -1209,22 +1244,41 @@ impl VM {
     /// avoid re-prompting on a target the user blanket-approved.
     fn capabilities_already_grant(&self, kind: &str, target: &str) -> bool {
         match kind {
-            "read" => self.capabilities.reads.contains(target),
-            "write" => self.capabilities.writes.contains(target),
+            "read" => self.capabilities.reads_always.contains(target),
+            "write" => self.capabilities.writes_always.contains(target),
             "net" => self.capabilities.nets.contains(target),
             _ => false,
         }
     }
 
-    /// Add a target to the granted set for `kind`. Called when the
-    /// user replies "always" to a REQUEST prompt.
-    fn grant_capability(&mut self, kind: &str, target: String) {
+    /// Add a one-shot grant for `kind`. Called when the user replies
+    /// "yes" to a REQUEST prompt; consumed by the next matching I/O op.
+    fn grant_once(&mut self, kind: &str, target: String) {
         match kind {
             "read" => {
-                self.capabilities.reads.insert(target);
+                self.capabilities.reads_once.insert(target);
             }
             "write" => {
-                self.capabilities.writes.insert(target);
+                self.capabilities.writes_once.insert(target);
+            }
+            "net" => {
+                // `net` is undifferentiated for now — no op consumes it,
+                // so the once/always distinction doesn't yet matter.
+                self.capabilities.nets.insert(target);
+            }
+            _ => {}
+        }
+    }
+
+    /// Add a persistent grant for `kind`. Called when the user replies
+    /// "always" to a REQUEST prompt; never consumed.
+    fn grant_always(&mut self, kind: &str, target: String) {
+        match kind {
+            "read" => {
+                self.capabilities.reads_always.insert(target);
+            }
+            "write" => {
+                self.capabilities.writes_always.insert(target);
             }
             "net" => {
                 self.capabilities.nets.insert(target);
@@ -2862,6 +2916,77 @@ EVACUATE "out.txt""#,
         let (_, _, result) = run(&src);
         result.unwrap();
         assert!(tmp.exists());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn hard_mode_request_yes_then_evacuate_succeeds() {
+        // A one-shot 'yes' grant must let the subsequent EVACUATE
+        // proceed. Before this fix REQUEST pushed TRUE without
+        // recording the grant, so the next EVACUATE raised OUTSIDE.
+        let tmp = std::env::temp_dir().join("anal_hard_test_once_grant.txt");
+        let _ = std::fs::remove_file(&tmp);
+        let tmp_lit = tmp.to_string_lossy().replace('\\', "\\\\");
+        let src = format!(
+            "PUSH \"{tmp_lit}\" PUSH \"write\" REQUEST POP\n\
+             PUSH \"hello\"\n\
+             EVACUATE \"{tmp_lit}\"",
+        );
+        let (_, _, result) = run_hard_with_input(&src, b"yes\n");
+        result.unwrap();
+        assert!(tmp.exists());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn hard_mode_one_shot_grant_is_consumed() {
+        // After a 'yes' grant is consumed by one EVACUATE, a second
+        // EVACUATE to the same target without a fresh REQUEST raises
+        // OUTSIDE.
+        let tmp = std::env::temp_dir().join("anal_hard_test_consume.txt");
+        let _ = std::fs::remove_file(&tmp);
+        let tmp_lit = tmp.to_string_lossy().replace('\\', "\\\\");
+        let src = format!(
+            "PUSH \"{tmp_lit}\" PUSH \"write\" REQUEST POP\n\
+             PUSH \"first\"\n\
+             EVACUATE \"{tmp_lit}\"\n\
+             PUSH \"second\"\n\
+             CONSENT\n\
+             EVACUATE \"{tmp_lit}\"",
+        );
+        let (_, _, result) = run_hard_with_input(&src, b"yes\n");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AnalError::Outside {
+                    op: "EVACUATE",
+                    kind: "write",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn hard_mode_always_grant_is_not_consumed() {
+        // An 'always' grant lets repeated I/O to the same target run
+        // without re-prompting.
+        let tmp = std::env::temp_dir().join("anal_hard_test_always.txt");
+        let _ = std::fs::remove_file(&tmp);
+        let tmp_lit = tmp.to_string_lossy().replace('\\', "\\\\");
+        let src = format!(
+            "PUSH \"{tmp_lit}\" PUSH \"write\" REQUEST POP\n\
+             PUSH \"first\"\n\
+             EVACUATE \"{tmp_lit}\"\n\
+             PUSH \"second\"\n\
+             CONSENT\n\
+             EVACUATE \"{tmp_lit}\"",
+        );
+        let (_, _, result) = run_hard_with_input(&src, b"always\n");
+        result.unwrap();
         let _ = std::fs::remove_file(&tmp);
     }
 }
