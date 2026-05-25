@@ -550,10 +550,7 @@ impl<'a> Ctx<'a> {
                     let top = peek(stack, "LOAD", span)?;
                     if !matches!(top, Ty::Cavity | Ty::Top) {
                         return Err(AnalError::Mismatch {
-                            message: format!(
-                                "LOAD expects a CAVITY on top, found {}",
-                                top.name()
-                            ),
+                            message: format!("LOAD expects a CAVITY on top, found {}", top.name()),
                             span,
                         });
                     }

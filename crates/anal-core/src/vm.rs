@@ -832,10 +832,7 @@ impl VM {
                     return Err(AnalError::Tightness { op: "BUFSET", span });
                 }
                 if !self.consent_armed {
-                    return Err(AnalError::Refusal {
-                        op: "BUFSET",
-                        span,
-                    });
+                    return Err(AnalError::Refusal { op: "BUFSET", span });
                 }
                 let value = match self.pop("BUFSET", span)? {
                     Value::Int(n) => n,
@@ -1963,7 +1960,10 @@ PUSH 0 PUSH 99
 CONSENT
 BUFSET"#);
         let err = result.unwrap_err();
-        assert!(matches!(err, AnalError::Tightness { op: "BUFSET", .. }), "got {err:?}");
+        assert!(
+            matches!(err, AnalError::Tightness { op: "BUFSET", .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1972,7 +1972,10 @@ BUFSET"#);
         let (_, _, result) = run(r#"PUSH 1
 INSERT 0 99"#);
         let err = result.unwrap_err();
-        assert!(matches!(err, AnalError::Tightness { op: "INSERT", .. }), "got {err:?}");
+        assert!(
+            matches!(err, AnalError::Tightness { op: "INSERT", .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
