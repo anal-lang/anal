@@ -92,6 +92,12 @@ pub enum Op {
     /// Write the top of stack to the given path. Does not POP. Overwrites.
     /// Requires CONSENT if the file already exists.
     Evacuate(String),
+    /// POP a STRING `kind` and a STRING `target`, prompt the user for
+    /// a capability grant in `--hard` mode (or auto-grant in soft mode),
+    /// and PUSH a BOOL indicating whether the grant was given.
+    /// Valid kinds are `"read"`, `"write"`, `"net"`; any other raises
+    /// REJECTION at runtime.
+    Request,
     /// Read one raw byte from stdin and PUSH it as an INT (0..=255), or -1
     /// on EOF. Pairs with [`Op::EmitByte`].
     ReceiveByte,

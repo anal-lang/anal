@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::check::{check_fragment, Ty};
+use crate::check::{check_fragment, Effect, Ty};
 use crate::error::AnalError;
 use crate::op::{Instr, Program};
 use crate::parser::compile_fragment;
@@ -35,6 +35,9 @@ pub struct Session {
     passages: HashMap<String, Rc<[Instr]>>,
     /// Abstract type stack — mirrors the runtime stack shape.
     abstract_stack: Vec<Ty>,
+    /// Abstract consent state — mirrors the runtime latches on the VM
+    /// (`prep_armed`, `consent_armed`, `clench_depth`).
+    abstract_effect: Effect,
 }
 
 impl Default for Session {
@@ -48,6 +51,7 @@ impl Session {
         Self {
             passages: HashMap::new(),
             abstract_stack: Vec::new(),
+            abstract_effect: Effect::default(),
         }
     }
 
@@ -73,7 +77,12 @@ impl Session {
             merged.insert(name.clone(), body.clone());
         }
 
-        check_fragment(&fragment.main, &merged, &mut self.abstract_stack)?;
+        check_fragment(
+            &fragment.main,
+            &merged,
+            &mut self.abstract_stack,
+            &mut self.abstract_effect,
+        )?;
 
         // Check passed — commit the new passages.
         self.passages = merged;
@@ -98,10 +107,12 @@ impl Session {
     }
 
     /// Drop all session state: forget every passage, clear the
-    /// abstract stack. The VM-side state must be reset separately.
+    /// abstract stack and effect. The VM-side state must be reset
+    /// separately.
     pub fn reset(&mut self) {
         self.passages.clear();
         self.abstract_stack.clear();
+        self.abstract_effect = Effect::default();
     }
 }
 

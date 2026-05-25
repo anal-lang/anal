@@ -514,6 +514,9 @@ impl<'a> Parser<'a> {
             // ── RECEIVE — read one line from stdin ─────
             Token::Receive => self.emit(Op::Receive, span),
 
+            // ── REQUEST — capability ask (--hard mode) ──
+            Token::Request => self.emit(Op::Request, span),
+
             // ── Byte I/O ───────────────────────────────
             Token::ReceiveByte => self.emit(Op::ReceiveByte, span),
             Token::EmitByte => self.emit(Op::EmitByte, span),

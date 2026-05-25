@@ -18,10 +18,31 @@
 //!
 //! ## What it does not track
 //!
-//! - PREP / CONSENT / CLENCH state. Those are effects, not types; they
-//!   stay as runtime checks for now.
 //! - Concrete values. `PUSH 0 DIV` is well-typed even though the VM will
 //!   reject it at runtime. The checker is about types, not values.
+//!
+//! ## What it also tracks — the consent effect
+//!
+//! Alongside the abstract stack, the checker walks an [`Effect`] — the
+//! abstract counterpart of the runtime latches held on `VM`
+//! (`prep_armed`, `consent_armed`, `clench_depth`). A destructive op
+//! (`INSERT`, `EXTRACT`, `FLUSH`, `BUFSET`, `STORE`) raises its
+//! existing `TIGHTNESS` / `REFUSAL` / `LOCKDOWN` variant at probe time
+//! when the checker can prove the precondition is not met on every
+//! path that reaches the op.
+//!
+//! Each latch is a three-valued [`Latch`] (`Unarmed`, `Armed`, `Top`).
+//! `Top` is the join of disagreeing branches — "armed on one path,
+//! unarmed on another, so we cannot prove either." A destructive op
+//! requires `Armed`; both `Unarmed` and `Top` are rejected. `clench_depth`
+//! is an `Option<u32>`: `Some(n)` when every path agrees, `None` when
+//! arms disagree (treated as unknown, so any LOCKDOWN check fails).
+//!
+//! At an `IF_TIGHT`/`IF_LOOSE` merge the arm-ran effect is joined into
+//! the outer effect. At a `DILATE` back-edge the entry effect is
+//! joined with the body-exit effect, since the loop may run zero or
+//! more times. The join is associative and commutative, so loop order
+//! does not matter.
 //!
 //! ## Control flow
 //!
@@ -85,6 +106,73 @@ impl Ty {
     }
 }
 
+/// Three-valued latch state for the static consent effect.
+///
+/// `Unarmed` and `Armed` mirror the runtime booleans precisely;
+/// `Top` represents "different on different paths, so unknown."
+/// Destructive ops require `Armed` and reject `Top` the same way
+/// they reject `Unarmed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Latch {
+    #[default]
+    Unarmed,
+    Armed,
+    Top,
+}
+
+impl Latch {
+    /// Lattice join. Equal inputs are preserved; disagreement raises to `Top`.
+    fn join(a: Latch, b: Latch) -> Latch {
+        match (a, b) {
+            (Latch::Unarmed, Latch::Unarmed) => Latch::Unarmed,
+            (Latch::Armed, Latch::Armed) => Latch::Armed,
+            _ => Latch::Top,
+        }
+    }
+
+    fn is_armed(self) -> bool {
+        matches!(self, Latch::Armed)
+    }
+}
+
+/// Abstract consent state — the static counterpart of the runtime
+/// latches held on `VM` (`prep_armed`, `consent_armed`, `clench_depth`).
+///
+/// Each latch is a [`Latch`]; `clench_depth` is `Some(n)` when every
+/// reaching path agrees on the depth and `None` when paths disagree
+/// (treated as unknown). Joined at control-flow merges via
+/// [`Effect::join_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Effect {
+    prep: Latch,
+    consent: Latch,
+    clench_depth: Option<u32>,
+}
+
+impl Default for Effect {
+    fn default() -> Self {
+        Self {
+            prep: Latch::Unarmed,
+            consent: Latch::Unarmed,
+            clench_depth: Some(0),
+        }
+    }
+}
+
+impl Effect {
+    /// Join `other` into `self`. Latches join via the [`Latch`] lattice;
+    /// `clench_depth` is preserved when both paths agree on the depth
+    /// and otherwise collapses to `None` (unknown).
+    fn join_with(&mut self, other: &Effect) {
+        self.prep = Latch::join(self.prep, other.prep);
+        self.consent = Latch::join(self.consent, other.consent);
+        self.clench_depth = match (self.clench_depth, other.clench_depth) {
+            (Some(a), Some(b)) if a == b => Some(a),
+            _ => None,
+        };
+    }
+}
+
 fn ty_of(value: &Value) -> Ty {
     match value {
         Value::Int(_) => Ty::Int,
@@ -101,31 +189,36 @@ fn ty_of(value: &Value) -> Ty {
 pub fn check_program(program: &Program) -> Result<(), AnalError> {
     let mut ctx = Ctx::new(program);
     let mut stack: Vec<Ty> = Vec::new();
-    ctx.check_block(&program.main, &mut stack)?;
+    let mut effect = Effect::default();
+    ctx.check_block(&program.main, &mut stack, &mut effect)?;
     Ok(())
 }
 
 /// Incremental check used by the REPL: walks `code` against an existing
-/// `stack` (mutated in place) and the supplied `passages` table.
+/// `stack` (mutated in place), the supplied `passages` table, and the
+/// REPL's persistent effect state.
 ///
-/// On success, `stack` reflects the abstract stack after running the
-/// fragment, so the next fragment can be checked against it. On failure,
-/// `stack` is restored to its pre-fragment shape — the REPL convention
-/// is that a rejected line changes nothing.
+/// On success, `stack` and `effect` reflect the abstract state after
+/// running the fragment. On failure, both are restored to their
+/// pre-fragment values — the REPL convention is that a rejected line
+/// changes nothing.
 pub fn check_fragment(
     code: &[Instr],
     passages: &HashMap<String, std::rc::Rc<[Instr]>>,
     stack: &mut Vec<Ty>,
+    effect: &mut Effect,
 ) -> Result<(), AnalError> {
-    let snapshot = stack.clone();
+    let stack_snapshot = stack.clone();
+    let effect_snapshot = *effect;
     let mut ctx = Ctx {
         passages,
         on_stack: HashSet::new(),
     };
-    match ctx.check_block(code, stack) {
+    match ctx.check_block(code, stack, effect) {
         Ok(()) => Ok(()),
         Err(e) => {
-            *stack = snapshot;
+            *stack = stack_snapshot;
+            *effect = effect_snapshot;
             Err(e)
         }
     }
@@ -147,9 +240,15 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Walk a straight-line code block, applying each op's typing rule.
-    /// Loops and conditional BLOC execution are handled internally.
-    fn check_block(&mut self, code: &[Instr], stack: &mut Vec<Ty>) -> Result<(), AnalError> {
+    /// Walk a straight-line code block, applying each op's typing rule
+    /// and updating the abstract consent effect. Loops and conditional
+    /// BLOC execution are handled internally.
+    fn check_block(
+        &mut self,
+        code: &[Instr],
+        stack: &mut Vec<Ty>,
+        effect: &mut Effect,
+    ) -> Result<(), AnalError> {
         let mut pc = 0;
         // The most-recently-pushed BLOC body, if the immediately-prior
         // instruction was `Push(Bloc(...))`. This lets us look inside the
@@ -177,7 +276,14 @@ impl<'a> Ctx<'a> {
                     let body_start = pc + 1;
                     let body_end = *target - 1; // JumpIfTruthy sits at *target - 1
                     let snapshot = stack.clone();
-                    self.check_block(&code[body_start..body_end], stack)?;
+                    // Loop may run zero or more times: walk the body on a
+                    // fresh effect copy, then join with the entry effect to
+                    // model "ran" vs "skipped." This means arming inside the
+                    // body does not survive past the back-edge unless it was
+                    // also armed before the loop.
+                    let entry_effect = *effect;
+                    let mut body_effect = *effect;
+                    self.check_block(&code[body_start..body_end], stack, &mut body_effect)?;
                     // The back-edge pops the condition once more.
                     pop_expect(stack, &[Ty::Top], "DILATE back-edge", span)?;
                     if *stack != snapshot {
@@ -190,6 +296,8 @@ impl<'a> Ctx<'a> {
                             span,
                         });
                     }
+                    *effect = entry_effect;
+                    effect.join_with(&body_effect);
                     pc = *target;
                 }
 
@@ -211,13 +319,17 @@ impl<'a> Ctx<'a> {
                     pop_expect(stack, &[Ty::Bloc, Ty::Top], "IF_TIGHT/IF_LOOSE", span)?;
                     pop_any(stack, "IF_TIGHT/IF_LOOSE", span)?;
                     // If we know the BLOC body (it was pushed inline as a
-                    // literal), walk it on a copy of the stack and merge:
-                    // arm-ran vs arm-didn't-run. Conflicting slots collapse
-                    // to Ty::Top.
+                    // literal), walk it on a copy of the stack and effect.
+                    // Stacks merge slot-by-slot (conflicting types → Top);
+                    // effects join via the Latch lattice (arm-ran vs
+                    // arm-skipped). Latch agreement is preserved; disagreement
+                    // raises to Top, which destructive ops reject.
                     if let Some(body) = just_pushed_bloc.as_ref() {
                         let mut ran = stack.clone();
-                        self.check_block(body, &mut ran)?;
+                        let mut ran_effect = *effect;
+                        self.check_block(body, &mut ran, &mut ran_effect)?;
                         merge_into(stack, &ran, span)?;
+                        effect.join_with(&ran_effect);
                     }
                     // Otherwise the BLOC came from a dynamic source (e.g.
                     // built by DUP earlier); we cannot inspect its body
@@ -230,7 +342,7 @@ impl<'a> Ctx<'a> {
                     // straight into the outer stack (unconditional call).
                     if let Some(body) = just_pushed_bloc.as_ref() {
                         let body = body.clone();
-                        self.check_block(&body, stack)?;
+                        self.check_block(&body, stack, effect)?;
                     }
                 }
 
@@ -246,7 +358,7 @@ impl<'a> Ctx<'a> {
                     } else {
                         self.on_stack.insert(name.clone());
                         let body = body.clone();
-                        let result = self.check_block(&body, stack);
+                        let result = self.check_block(&body, stack, effect);
                         self.on_stack.remove(name);
                         result?;
                     }
@@ -322,24 +434,56 @@ impl<'a> Ctx<'a> {
                 Op::Extract(_) => {
                     // EXTRACT removes one value; we don't know its type
                     // statically (it's at a depth), so just shrink shape.
+                    require_consent(effect, "EXTRACT", span)?;
+                    require_unclenched(effect, "EXTRACT", span)?;
                     pop_any(stack, "EXTRACT", span)?;
+                    effect.consent = Latch::Unarmed;
                 }
                 Op::Insert { value, .. } => {
                     // INSERT places a value at a depth without consuming
                     // anything from the top.
+                    require_prep(effect, "INSERT", span)?;
+                    require_unclenched(effect, "INSERT", span)?;
                     stack.push(ty_of(value));
+                    effect.prep = Latch::Unarmed;
                 }
-                Op::Flush => stack.clear(),
+                Op::Flush => {
+                    require_consent(effect, "FLUSH", span)?;
+                    require_unclenched(effect, "FLUSH", span)?;
+                    stack.clear();
+                    effect.consent = Latch::Unarmed;
+                }
 
-                // ── consent / capacity / pause (stack-neutral, no-op for types) ──
-                Op::Prep
-                | Op::Consent
-                | Op::Relax
-                | Op::Clench
-                | Op::Release
-                | Op::Expand(_)
-                | Op::Hold(_)
-                | Op::Resume => {}
+                // ── consent / capacity / pause ──
+                Op::Prep => {
+                    require_unclenched(effect, "PREP", span)?;
+                    effect.prep = Latch::Armed;
+                }
+                Op::Consent => {
+                    require_unclenched(effect, "CONSENT", span)?;
+                    effect.consent = Latch::Armed;
+                }
+                Op::Relax => {
+                    // Idempotent and allowed during CLENCH (touches latches,
+                    // not the stack); mirrors the VM.
+                    effect.prep = Latch::Unarmed;
+                    effect.consent = Latch::Unarmed;
+                }
+                Op::Clench => {
+                    effect.clench_depth = effect.clench_depth.map(|d| d.saturating_add(1));
+                }
+                Op::Release => match effect.clench_depth {
+                    Some(0) => return Err(AnalError::PrematureRelease { span }),
+                    Some(n) => effect.clench_depth = Some(n - 1),
+                    // Depth is unknown (paths disagreed). Cannot rule out
+                    // a RELEASE from depth 0 on some path; reject.
+                    None => return Err(AnalError::PrematureRelease { span }),
+                },
+                Op::Expand(_) | Op::Hold(_) | Op::Resume => {
+                    // EXPAND/HOLD/RESUME do call check_unclenched at runtime,
+                    // but they aren't part of the consent story; leave the
+                    // LOCKDOWN check at runtime for now.
+                }
 
                 // ── I/O ──
                 Op::Expel => {
@@ -361,6 +505,13 @@ impl<'a> Ctx<'a> {
                             span,
                         });
                     }
+                }
+
+                // REQUEST: ( target:STR kind:STR -- granted:BOOL )
+                Op::Request => {
+                    pop_expect(stack, &[Ty::Str], "REQUEST kind", span)?;
+                    pop_expect(stack, &[Ty::Str], "REQUEST target", span)?;
+                    stack.push(Ty::Bool);
                 }
 
                 // ── arithmetic ──
@@ -518,6 +669,9 @@ impl<'a> Ctx<'a> {
                 // BUFSET: pop INT value, INT index, leaving CAVITY on top.
                 // CAVITY must be there; we don't pop it.
                 Op::Bufset => {
+                    require_prep(effect, "BUFSET", span)?;
+                    require_consent(effect, "BUFSET", span)?;
+                    require_unclenched(effect, "BUFSET", span)?;
                     pop_expect(stack, &[Ty::Int], "BUFSET", span)?;
                     pop_expect(stack, &[Ty::Int], "BUFSET", span)?;
                     let below = peek(stack, "BUFSET", span)?;
@@ -530,6 +684,8 @@ impl<'a> Ctx<'a> {
                             span,
                         });
                     }
+                    effect.prep = Latch::Unarmed;
+                    effect.consent = Latch::Unarmed;
                 }
                 // BUFLEN: peek CAVITY, push INT above it.
                 Op::Buflen => {
@@ -558,6 +714,9 @@ impl<'a> Ctx<'a> {
                 }
                 // STORE <i>: pop INT value, peek CAVITY beneath.
                 Op::Store(_) => {
+                    require_prep(effect, "STORE", span)?;
+                    require_consent(effect, "STORE", span)?;
+                    require_unclenched(effect, "STORE", span)?;
                     pop_expect(stack, &[Ty::Int], "STORE", span)?;
                     let below = peek(stack, "STORE", span)?;
                     if !matches!(below, Ty::Cavity | Ty::Top) {
@@ -569,6 +728,8 @@ impl<'a> Ctx<'a> {
                             span,
                         });
                     }
+                    effect.prep = Latch::Unarmed;
+                    effect.consent = Latch::Unarmed;
                 }
             }
 
@@ -583,6 +744,33 @@ impl<'a> Ctx<'a> {
 }
 
 // ── helpers ────────────────────────────────────────────
+
+fn require_prep(effect: &Effect, op: &'static str, span: Span) -> Result<(), AnalError> {
+    if effect.prep.is_armed() {
+        Ok(())
+    } else {
+        Err(AnalError::Tightness { op, span })
+    }
+}
+
+fn require_consent(effect: &Effect, op: &'static str, span: Span) -> Result<(), AnalError> {
+    if effect.consent.is_armed() {
+        Ok(())
+    } else {
+        Err(AnalError::Refusal { op, span })
+    }
+}
+
+/// Rejects when the checker cannot prove `clench_depth == 0`. `None`
+/// (paths disagree) is treated the same as a known nonzero depth — both
+/// mean "we cannot rule out a CLENCH on some path that reaches here."
+fn require_unclenched(effect: &Effect, op: &'static str, span: Span) -> Result<(), AnalError> {
+    if effect.clench_depth == Some(0) {
+        Ok(())
+    } else {
+        Err(AnalError::Lockdown { op, span })
+    }
+}
 
 fn require_nonempty(stack: &[Ty], op: &'static str, span: Span) -> Result<(), AnalError> {
     if stack.is_empty() {
@@ -1137,5 +1325,296 @@ PREP CONSENT
 STORE 0"#,
         );
         assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    // ── consent effect: static enforcement of PREP/CONSENT/CLENCH ──
+
+    #[test]
+    fn insert_without_prep_is_tightness_at_probe_time() {
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+INSERT 1 99"#,
+        );
+        assert!(
+            matches!(err, AnalError::Tightness { op: "INSERT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn extract_without_consent_is_refusal_at_probe_time() {
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+EXTRACT 1"#,
+        );
+        assert!(
+            matches!(err, AnalError::Refusal { op: "EXTRACT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn flush_without_consent_is_refusal_at_probe_time() {
+        let err = check_err(
+            r#"PUSH 1 PUSH 2
+FLUSH"#,
+        );
+        assert!(
+            matches!(err, AnalError::Refusal { op: "FLUSH", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn prep_is_one_shot_in_the_checker_too() {
+        // After INSERT consumes PREP, a second INSERT without re-priming
+        // must be rejected statically — same one-shot semantics as the VM.
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+INSERT 1 99
+INSERT 1 88"#,
+        );
+        assert!(
+            matches!(err, AnalError::Tightness { op: "INSERT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn consent_is_one_shot_in_the_checker_too() {
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+CONSENT
+EXTRACT 1
+EXTRACT 0"#,
+        );
+        assert!(
+            matches!(err, AnalError::Refusal { op: "EXTRACT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn bufset_needs_both_prep_and_consent_statically() {
+        // PREP alone is not enough for BUFSET — it also needs CONSENT.
+        let err = check_err(
+            r#"BUFFER 4
+PUSH 0 PUSH 42
+PREP
+BUFSET"#,
+        );
+        assert!(
+            matches!(err, AnalError::Refusal { op: "BUFSET", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn store_needs_both_prep_and_consent_statically() {
+        let err = check_err(
+            r#"BUFFER 4
+PUSH 42
+CONSENT
+STORE 0"#,
+        );
+        assert!(
+            matches!(err, AnalError::Tightness { op: "STORE", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn insert_during_clench_is_lockdown_at_probe_time() {
+        // Even with PREP armed, an INSERT inside a CLENCH must be rejected
+        // statically — same LOCKDOWN the VM raises at runtime.
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+CLENCH
+INSERT 1 99"#,
+        );
+        assert!(
+            matches!(err, AnalError::Lockdown { op: "INSERT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn release_on_unclenched_is_premature_release_at_probe_time() {
+        let err = check_err("RELEASE");
+        assert!(
+            matches!(err, AnalError::PrematureRelease { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn matched_clench_release_allows_subsequent_insert() {
+        check_ok(
+            r#"PUSH 1 PUSH 2 PUSH 3
+CLENCH
+RELEASE
+PREP
+INSERT 1 99"#,
+        );
+    }
+
+    #[test]
+    fn relax_clears_arming_in_the_checker() {
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+RELAX
+INSERT 1 99"#,
+        );
+        assert!(
+            matches!(err, AnalError::Tightness { op: "INSERT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn relax_allowed_during_clench_in_the_checker() {
+        // RELAX is the only latch-adjacent op the VM permits while CLENCHed.
+        // The static checker must agree.
+        check_ok(
+            r#"CLENCH
+RELAX
+RELEASE"#,
+        );
+    }
+
+    #[test]
+    fn passage_threads_arming_to_caller() {
+        // A passage that arms PREP and returns should let the caller INSERT
+        // without re-priming. The checker re-walks the passage body at the
+        // call site, so the post-call effect carries PREP=armed.
+        check_ok(
+            r#"PASSAGE arm: PREP EXIT
+PUSH 1 PUSH 2 PUSH 3
+ENTER arm
+INSERT 1 99"#,
+        );
+    }
+
+    #[test]
+    fn arming_inside_if_tight_does_not_survive_the_merge() {
+        // Conservative merge: even though PREP is armed inside the IF_TIGHT
+        // arm, the static checker assumes the arm may not have run and
+        // treats PREP as unarmed after the merge.
+        let err = check_err(
+            r#"PUSH 1
+IF_TIGHT [ PREP ]
+PUSH 1 PUSH 2 PUSH 3
+INSERT 1 99"#,
+        );
+        assert!(
+            matches!(err, AnalError::Tightness { op: "INSERT", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn arming_in_both_arms_survives_an_if_loose_split() {
+        // PREP armed before the IF, the arm RELAXes and re-PREPs (still
+        // Armed at arm-exit); the skipped path keeps PREP=Armed too.
+        // Join: Armed ⊔ Armed = Armed. INSERT after is legal.
+        check_ok(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+PUSH 0
+IF_LOOSE [
+  RELAX
+  PREP
+]
+INSERT 1 99"#,
+        );
+    }
+
+    #[test]
+    fn matched_clench_release_inside_if_tight_survives_the_merge() {
+        // Both paths exit with clench_depth = 0 (the arm CLENCHes and
+        // RELEASEs back); join preserves Some(0). A destructive op
+        // after is fine.
+        check_ok(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PUSH 1
+IF_TIGHT [
+  CLENCH
+  RELEASE
+]
+PREP
+INSERT 1 99"#,
+        );
+    }
+
+    #[test]
+    fn unbalanced_clench_inside_if_tight_is_lockdown_after_the_merge() {
+        // The arm CLENCHes without RELEASE, so its exit depth is 1; the
+        // skipped path has depth 0. Join is None ("unknown"). A subsequent
+        // PREP cannot prove the stack is unclenched and raises LOCKDOWN.
+        let err = check_err(
+            r#"PUSH 1
+IF_TIGHT [ CLENCH ]
+PREP"#,
+        );
+        assert!(
+            matches!(err, AnalError::Lockdown { op: "PREP", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn arming_and_consuming_inside_the_same_if_tight_works() {
+        // The canonical consent_dialog.anal pattern: PREP, INSERT, all inside
+        // a single conditional arm. The arm is self-contained, so the
+        // collapse at merge has nothing to collapse.
+        check_ok(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PUSH 1
+IF_TIGHT [
+  PREP
+  INSERT 1 99
+]"#,
+        );
+    }
+
+    #[test]
+    fn arming_before_a_loop_that_does_not_touch_it_survives() {
+        // The body never disarms PREP, so it stays Armed on both the
+        // skipped and ran paths; the join preserves Armed. INSERT is
+        // legal after the loop.
+        check_ok(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+PUSH 0
+DILATE
+  PUSH 0
+CONSTRICT
+INSERT 1 99"#,
+        );
+    }
+
+    #[test]
+    fn arming_before_a_loop_that_clears_it_does_not_survive() {
+        // The body RELAXes, which clears PREP back to Unarmed. Joining
+        // the entry effect (PREP=Armed) with the body-exit effect
+        // (PREP=Unarmed) gives Top, and the subsequent INSERT is
+        // rejected.
+        let err = check_err(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+PUSH 0
+DILATE
+  RELAX
+  PUSH 0
+CONSTRICT
+INSERT 1 99"#,
+        );
+        assert!(
+            matches!(err, AnalError::Tightness { op: "INSERT", .. }),
+            "got {err:?}"
+        );
     }
 }

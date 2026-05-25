@@ -30,14 +30,71 @@
 //!     — you can only commit to more headroom, never less.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::rc::Rc;
 
 use crate::error::AnalError;
+use crate::ledger::{LedgerSink, OpTag, TypeTag, TOP_TYPES_CAPACITY};
 use crate::op::{Instr, Op, Program};
 use crate::token::Span;
 use crate::value::Value;
+
+/// Type-erased ledger sink: wraps any `Write`-backed sink so the VM can
+/// hold an optional one without becoming generic over the writer type.
+pub type BoxedLedger = LedgerSink<Box<dyn Write>>;
+
+/// Capability state for `--hard` mode. When `hard_mode` is false (the
+/// default), capability checks are skipped entirely and any I/O op
+/// proceeds with ambient authority — matching pre-v0.4 behaviour.
+///
+/// When `hard_mode` is true, every `INGEST` / `EVACUATE` is gated by
+/// the corresponding granted set; an op against a target not in its
+/// set raises `Outside` (E019). `REQUEST` is the only way to add to
+/// these sets at runtime; there is no command-line pre-grant.
+#[derive(Debug, Default, Clone)]
+pub struct Capabilities {
+    pub hard_mode: bool,
+    /// Targets the user has authorised for `read` (used by `INGEST`).
+    pub reads: HashSet<String>,
+    /// Targets the user has authorised for `write` (used by `EVACUATE`).
+    pub writes: HashSet<String>,
+    /// Targets the user has authorised for `net`. No op consumes this
+    /// yet — network primitives are a planned follow-up. Defined now so
+    /// programs can declare their network reach in advance.
+    pub nets: HashSet<String>,
+}
+
+impl Capabilities {
+    /// Engage `--hard` mode. All future I/O checks consult the granted
+    /// sets; nothing is ambient.
+    pub fn enable_hard_mode(&mut self) {
+        self.hard_mode = true;
+    }
+
+    fn allows_read(&self, target: &str) -> bool {
+        !self.hard_mode || self.reads.contains(target)
+    }
+
+    fn allows_write(&self, target: &str) -> bool {
+        !self.hard_mode || self.writes.contains(target)
+    }
+}
+
+/// Map a runtime [`Value`] to the ledger's [`TypeTag`]. The two enums
+/// mirror each other in variant order; this exists only to bridge them
+/// without making `Value` depend on the ledger module.
+fn type_tag_of(v: &Value) -> TypeTag {
+    match v {
+        Value::Int(_) => TypeTag::Int,
+        Value::Float(_) => TypeTag::Float,
+        Value::Str(_) => TypeTag::Str,
+        Value::Bool(_) => TypeTag::Bool,
+        Value::Bloc(_) => TypeTag::Bloc,
+        Value::Cavity(_) => TypeTag::Cavity,
+    }
+}
 
 pub struct VM {
     stack: Vec<Value>,
@@ -59,6 +116,14 @@ pub struct VM {
     /// first `EXPAND n` sets it to `len + n`; subsequent `EXPAND`s only
     /// raise it. A push past the cap raises `OVERFLOW`.
     capacity: Option<usize>,
+    /// Optional audit ledger. When attached, every successful destructive
+    /// op appends one record to the underlying writer. Failed ops are
+    /// not logged.
+    ledger: Option<BoxedLedger>,
+    /// Capability state for `--hard` mode. Default-constructed (all
+    /// empty, `hard_mode = false`), which means every I/O check is a
+    /// no-op — soft mode runs with ambient authority.
+    capabilities: Capabilities,
 }
 
 /// How a single instruction influences the surrounding block's PC.
@@ -86,7 +151,37 @@ impl VM {
             clench_depth: 0,
             aborted: false,
             capacity: None,
+            ledger: None,
+            capabilities: Capabilities::default(),
         }
+    }
+
+    /// Engage `--hard` mode: from now on, `INGEST` and `EVACUATE`
+    /// require an explicit `REQUEST` grant for the exact target path.
+    /// Calling this on a running VM is allowed, but any previously-
+    /// granted capabilities remain in place.
+    pub fn enable_hard_mode(&mut self) {
+        self.capabilities.enable_hard_mode();
+    }
+
+    /// Borrow the capability state — useful for tests and for callers
+    /// that want to inspect what the program has been granted so far.
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
+    /// Attach an audit ledger. Every subsequent successful destructive
+    /// op (`INSERT`, `EXTRACT`, `FLUSH`, `BUFSET`, `STORE`, and an
+    /// `EVACUATE` that overwrote an existing file) appends one record.
+    /// Failed ops do not appear in the log. Pass `None` to detach.
+    pub fn attach_ledger(&mut self, ledger: Option<BoxedLedger>) {
+        self.ledger = ledger;
+    }
+
+    /// Borrow the currently-attached ledger, if any. Useful for tests
+    /// and for the CLI to force a final flush at program shutdown.
+    pub fn ledger_mut(&mut self) -> Option<&mut BoxedLedger> {
+        self.ledger.as_mut()
     }
 
     /// Current runtime stack (top of stack last). Exposed for the REPL
@@ -121,8 +216,9 @@ impl VM {
     }
 
     /// Reset all VM state: empty the stack, clear every latch, drop
-    /// the capacity cap, clear the abort flag. Used by the REPL's
-    /// `:reset` meta-command.
+    /// the capacity cap, clear the abort flag. The ledger sink, if any,
+    /// is left attached — REPL sessions that opt into auditing keep
+    /// recording across resets. Used by the REPL's `:reset` meta-command.
     pub fn reset(&mut self) {
         self.stack.clear();
         self.prep_armed = false;
@@ -431,9 +527,12 @@ impl VM {
                         span,
                     });
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 let idx = len - *depth;
                 self.push_at(idx, value.clone(), span)?;
                 self.prep_armed = false;
+                self.log_destructive(OpTag::Insert, span, depth_before, &top_before)?;
             }
             Op::Extract(depth) => {
                 self.check_unclenched("EXTRACT", span)?;
@@ -451,17 +550,23 @@ impl VM {
                         span,
                     });
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 let idx = len - 1 - *depth;
                 self.stack.remove(idx);
                 self.consent_armed = false;
+                self.log_destructive(OpTag::Extract, span, depth_before, &top_before)?;
             }
             Op::Flush => {
                 self.check_unclenched("FLUSH", span)?;
                 if !self.consent_armed {
                     return Err(AnalError::Refusal { op: "FLUSH", span });
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 self.stack.clear();
                 self.consent_armed = false;
+                self.log_destructive(OpTag::Flush, span, depth_before, &top_before)?;
             }
 
             // ── EXPAND ──────────────────────────────────────────
@@ -488,6 +593,14 @@ impl VM {
             // the difference.
             Op::IngestFile(path) => {
                 self.check_unclenched("INGEST", span)?;
+                if !self.capabilities.allows_read(path) {
+                    return Err(AnalError::Outside {
+                        op: "INGEST",
+                        kind: "read",
+                        target: path.clone(),
+                        span,
+                    });
+                }
                 let contents =
                     std::fs::read_to_string(Path::new(path)).map_err(|e| AnalError::Rejection {
                         expected: "readable file",
@@ -497,6 +610,14 @@ impl VM {
                 self.push(Value::Str(Rc::from(contents.as_str())), span)?;
             }
             Op::Evacuate(path) => {
+                if !self.capabilities.allows_write(path) {
+                    return Err(AnalError::Outside {
+                        op: "EVACUATE",
+                        kind: "write",
+                        target: path.clone(),
+                        span,
+                    });
+                }
                 let content = match self.peek("EVACUATE", span)? {
                     Value::Str(s) => Rc::clone(s),
                     other => {
@@ -508,7 +629,8 @@ impl VM {
                     }
                 };
                 let p = Path::new(path);
-                if p.exists() {
+                let overwriting = p.exists();
+                if overwriting {
                     if !self.consent_armed {
                         return Err(AnalError::Refusal {
                             op: "EVACUATE",
@@ -517,11 +639,24 @@ impl VM {
                     }
                     self.consent_armed = false;
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 std::fs::write(p, content.as_bytes()).map_err(|e| AnalError::Rejection {
                     expected: "writable file path",
                     found: format!("EVACUATE: {e}"),
                     span,
                 })?;
+                // Only the destructive (overwrite) path is logged. A
+                // creating EVACUATE writes a new file and needs no
+                // CONSENT — the ledger records consent-bearing acts only.
+                if overwriting {
+                    self.log_destructive(
+                        OpTag::EvacuateOverwrite,
+                        span,
+                        depth_before,
+                        &top_before,
+                    )?;
+                }
             }
             Op::Receive => {
                 self.check_unclenched("RECEIVE", span)?;
@@ -545,6 +680,106 @@ impl VM {
                     line.pop();
                 }
                 self.push(Value::Str(Rc::from(line.as_str())), span)?;
+            }
+
+            // ── REQUEST — capability grant (--hard mode) ────────
+            //
+            // Pops (target: STR, kind: STR), pushes (granted: BOOL).
+            // In soft mode (`hard_mode` off) the grant is trivially
+            // true — every I/O target is already ambiently authorised,
+            // so REQUEST is a no-op that always returns TRUE. In hard
+            // mode, the user is prompted on stderr and the answer is
+            // read from `input`. Valid replies: `yes` / `no` / `always`
+            // (case-insensitive). `always` persists the grant for the
+            // rest of the run. Anything else is treated as `no`.
+            //
+            // Kinds recognised: "read", "write", "net". Unknown kinds
+            // raise REJECTION — programs must declare reach in terms
+            // the runtime can enforce.
+            Op::Request => {
+                self.check_unclenched("REQUEST", span)?;
+                let kind = match self.pop("REQUEST", span)? {
+                    Value::Str(s) => s,
+                    other => {
+                        return Err(AnalError::Rejection {
+                            expected: "STRING",
+                            found: other.type_name().into(),
+                            span,
+                        });
+                    }
+                };
+                let target = match self.pop("REQUEST", span)? {
+                    Value::Str(s) => s,
+                    other => {
+                        return Err(AnalError::Rejection {
+                            expected: "STRING",
+                            found: other.type_name().into(),
+                            span,
+                        });
+                    }
+                };
+                // Validate the kind early — wrong kinds are a bug in
+                // the program, not a runtime decision the user should
+                // be asked about.
+                let kind_str: &str = &kind;
+                if !matches!(kind_str, "read" | "write" | "net") {
+                    return Err(AnalError::Rejection {
+                        expected: r#"REQUEST kind: "read", "write", or "net""#,
+                        found: format!("{kind_str:?}"),
+                        span,
+                    });
+                }
+
+                let granted = if !self.capabilities.hard_mode {
+                    // Soft mode: ambient authority, every REQUEST
+                    // returns TRUE. No prompt, no stderr noise.
+                    true
+                } else if self.capabilities_already_grant(kind_str, &target) {
+                    // Hard mode but the user already said "always" for
+                    // this (kind, target) — skip the prompt.
+                    true
+                } else {
+                    // Hard mode, fresh prompt. Write to err, read from
+                    // input. Flush err before blocking so the prompt is
+                    // actually visible.
+                    let _ = writeln!(
+                        err,
+                        "ANAL requests capability: {} {target:?}",
+                        kind_str.to_uppercase(),
+                    );
+                    let _ = writeln!(err, "  Grant? (yes / no / always)");
+                    let _ = err.flush();
+
+                    let mut answer = String::new();
+                    let n = input
+                        .read_line(&mut answer)
+                        .map_err(|e| AnalError::Rejection {
+                            expected: "readable stdin",
+                            found: format!("REQUEST: {e}"),
+                            span,
+                        })?;
+                    if n == 0 {
+                        // EOF mid-prompt: treat as denial. The program
+                        // gets a FALSE and decides what to do.
+                        false
+                    } else {
+                        // Strip a leading UTF-8 BOM if present — some
+                        // shells (notably Windows PowerShell) prepend
+                        // one to piped input — then trim whitespace
+                        // and case-fold for matching.
+                        let stripped = answer.trim_start_matches('\u{FEFF}').trim();
+                        let reply = stripped.to_ascii_lowercase();
+                        match reply.as_str() {
+                            "yes" | "y" => true,
+                            "always" | "a" => {
+                                self.grant_capability(kind_str, target.to_string());
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                };
+                self.push(Value::Bool(granted), span)?;
             }
 
             // ── HOLD ────────────────────────────────────────────
@@ -834,6 +1069,8 @@ impl VM {
                 if !self.consent_armed {
                     return Err(AnalError::Refusal { op: "BUFSET", span });
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 let value = match self.pop("BUFSET", span)? {
                     Value::Int(n) => n,
                     other => {
@@ -876,6 +1113,8 @@ impl VM {
                 cells[idx as usize] = value;
                 self.prep_armed = false;
                 self.consent_armed = false;
+                drop(cells);
+                self.log_destructive(OpTag::Bufset, span, depth_before, &top_before)?;
             }
             Op::Buflen => {
                 let cavity = match self.peek("BUFLEN", span)? {
@@ -923,6 +1162,8 @@ impl VM {
                 if !self.consent_armed {
                     return Err(AnalError::Refusal { op: "STORE", span });
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 let value = match self.pop("STORE", span)? {
                     Value::Int(n) => n,
                     other => {
@@ -955,9 +1196,86 @@ impl VM {
                 cells[*i] = value;
                 self.prep_armed = false;
                 self.consent_armed = false;
+                drop(cells);
+                self.log_destructive(OpTag::Store, span, depth_before, &top_before)?;
             }
         }
         Ok(Flow::Continue)
+    }
+
+    /// Whether the capability state already records a previous "always"
+    /// grant for this (kind, target). Distinct from `allows_*` because
+    /// it does not respect soft mode — REQUEST only consults it to
+    /// avoid re-prompting on a target the user blanket-approved.
+    fn capabilities_already_grant(&self, kind: &str, target: &str) -> bool {
+        match kind {
+            "read" => self.capabilities.reads.contains(target),
+            "write" => self.capabilities.writes.contains(target),
+            "net" => self.capabilities.nets.contains(target),
+            _ => false,
+        }
+    }
+
+    /// Add a target to the granted set for `kind`. Called when the
+    /// user replies "always" to a REQUEST prompt.
+    fn grant_capability(&mut self, kind: &str, target: String) {
+        match kind {
+            "read" => {
+                self.capabilities.reads.insert(target);
+            }
+            "write" => {
+                self.capabilities.writes.insert(target);
+            }
+            "net" => {
+                self.capabilities.nets.insert(target);
+            }
+            _ => {}
+        }
+    }
+
+    /// Snapshot the top of stack as a list of [`TypeTag`]s, top first.
+    /// Caps at [`TOP_TYPES_CAPACITY`]. Caller must invoke this *before*
+    /// the op mutates the stack, since the ledger records pre-op state.
+    fn top_types(&self) -> Vec<TypeTag> {
+        let n = self.stack.len().min(TOP_TYPES_CAPACITY);
+        let mut out = Vec::with_capacity(n);
+        for v in self.stack.iter().rev().take(n) {
+            out.push(type_tag_of(v));
+        }
+        out
+    }
+
+    /// Append a record to the attached ledger, if any. Called from each
+    /// destructive op's arm *after* the op succeeded. `depth_before` and
+    /// `top_types_before` must reflect the pre-op stack state — the
+    /// audit verifies the recorded shape against the source's
+    /// statically-checkable shape at that span. I/O failures bubble up
+    /// as `Rejection` so the program halts loudly rather than silently
+    /// dropping audit entries.
+    fn log_destructive(
+        &mut self,
+        op: OpTag,
+        span: Span,
+        depth_before: u32,
+        top_types_before: &[TypeTag],
+    ) -> Result<(), AnalError> {
+        let Some(ledger) = self.ledger.as_mut() else {
+            return Ok(());
+        };
+        ledger
+            .record(
+                op,
+                span.start as u32,
+                span.end as u32,
+                depth_before,
+                top_types_before,
+            )
+            .map_err(|e| AnalError::Rejection {
+                expected: "writable ledger sink",
+                found: format!("ledger write: {e}"),
+                span,
+            })?;
+        Ok(())
     }
 
     /// Raise `LOCKDOWN` if the stack is currently clenched.
@@ -2229,5 +2547,321 @@ DISCHARGE"#);
     fn nip_on_one_value_is_mismatch() {
         let (_, _, result) = run("PUSH 1 NIP");
         assert!(matches!(result.unwrap_err(), AnalError::Mismatch { .. }));
+    }
+
+    // ── ledger integration ──
+
+    /// Run `src` with a ledger attached, returning (decoded ledger
+    /// records, run result). Source hash is hard-coded to a fixed
+    /// fingerprint for predictable tests.
+    fn run_with_ledger(src: &str) -> (Vec<crate::ledger::LedgerRecord>, Result<(), AnalError>) {
+        use crate::ledger::{hash_source, LedgerReader, LedgerSink};
+        use std::io::Cursor;
+
+        let program = compile(src).expect("program must compile");
+        let mut input = Cursor::new(b"");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+
+        // Hold the ledger bytes in an Rc<RefCell<Vec<u8>>> so we can
+        // both lend the writer to the VM and read it back after the
+        // run completes.
+        use std::cell::RefCell;
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+
+        struct SharedBuf(Rc<RefCell<Vec<u8>>>);
+        impl io::Write for SharedBuf {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.0.borrow_mut().write(b)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let shared: Box<dyn io::Write> = Box::new(SharedBuf(Rc::clone(&buf)));
+        let sink = LedgerSink::new(shared, hash_source(src)).expect("header writes");
+        let mut vm = VM::new();
+        vm.attach_ledger(Some(sink));
+        let result = vm.run(&program, &mut input, &mut out, &mut err);
+
+        // Drop the VM (and its sink) so the Rc on buf goes back to one.
+        drop(vm);
+        let bytes = Rc::try_unwrap(buf)
+            .unwrap_or_else(|_| panic!("sink dropped"))
+            .into_inner();
+
+        let mut reader = LedgerReader::open(Cursor::new(bytes)).expect("header readable");
+        let mut records = Vec::new();
+        while let Some(r) = reader.next_record().expect("record decodes") {
+            records.push(r);
+        }
+        (records, result)
+    }
+
+    #[test]
+    fn ledger_records_a_flush() {
+        use crate::ledger::{OpTag, TypeTag};
+        let (records, result) = run_with_ledger(
+            r#"PUSH 1 PUSH 2 PUSH 3
+CONSENT
+FLUSH"#,
+        );
+        result.unwrap();
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert_eq!(r.op, OpTag::Flush);
+        assert_eq!(r.stack_depth, 3);
+        assert_eq!(r.top_types, vec![TypeTag::Int, TypeTag::Int, TypeTag::Int]);
+    }
+
+    #[test]
+    fn ledger_records_insert_extract_in_order() {
+        use crate::ledger::OpTag;
+        let (records, result) = run_with_ledger(
+            r#"PUSH 10 PUSH 20 PUSH 30
+PREP
+INSERT 1 15
+CONSENT
+EXTRACT 1"#,
+        );
+        result.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].op, OpTag::Insert);
+        assert_eq!(records[0].seq, 0);
+        assert_eq!(records[1].op, OpTag::Extract);
+        assert_eq!(records[1].seq, 1);
+    }
+
+    #[test]
+    fn ledger_records_bufset_with_pre_op_shape() {
+        use crate::ledger::{OpTag, TypeTag};
+        // Before BUFSET, the stack is [CAVITY, INT(0), INT(99)]; the top
+        // three types snapshot is [INT, INT, CAVITY] (top first).
+        let (records, result) = run_with_ledger(
+            r#"BUFFER 4
+PUSH 0 PUSH 99
+PREP CONSENT
+BUFSET"#,
+        );
+        result.unwrap();
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert_eq!(r.op, OpTag::Bufset);
+        assert_eq!(r.stack_depth, 3);
+        assert_eq!(
+            r.top_types,
+            vec![TypeTag::Int, TypeTag::Int, TypeTag::Cavity],
+        );
+    }
+
+    #[test]
+    fn ledger_does_not_record_failed_destructive_ops() {
+        // A BUFSET past the cavity bounds raises CAVITY_BREACH after
+        // pop-ing the value and index; the failure path must not log.
+        let program = compile(
+            r#"BUFFER 2
+PUSH 99 PUSH 42
+PREP CONSENT
+BUFSET"#,
+        )
+        .unwrap();
+
+        use crate::ledger::{hash_source, LedgerReader, LedgerSink};
+        use std::cell::RefCell;
+        use std::io::Cursor;
+
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        struct SharedBuf(Rc<RefCell<Vec<u8>>>);
+        impl io::Write for SharedBuf {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.0.borrow_mut().write(b)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = LedgerSink::new(
+            Box::new(SharedBuf(Rc::clone(&buf))) as Box<dyn io::Write>,
+            hash_source("dummy"),
+        )
+        .unwrap();
+
+        let mut vm = VM::new();
+        vm.attach_ledger(Some(sink));
+        let mut input = Cursor::new(b"");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let result = vm.run(&program, &mut input, &mut out, &mut err);
+        assert!(matches!(
+            result.unwrap_err(),
+            AnalError::CavityBreach { .. }
+        ));
+        drop(vm);
+
+        let bytes = Rc::try_unwrap(buf)
+            .unwrap_or_else(|_| panic!("sink dropped"))
+            .into_inner();
+        let mut reader = LedgerReader::open(Cursor::new(bytes)).unwrap();
+        assert!(reader.next_record().unwrap().is_none(), "no records logged");
+    }
+
+    #[test]
+    fn ledger_is_off_by_default() {
+        // Sanity: a VM with no ledger attached runs normally.
+        let (_, _, result) = run(r#"PUSH 1 PUSH 2 PUSH 3
+CONSENT
+FLUSH"#);
+        result.unwrap();
+    }
+
+    // ── REQUEST + --hard mode ────────────────────────────
+
+    /// Like `run_with_input` but engages `--hard` mode before execution.
+    /// `err` is returned alongside `out` so tests can assert on REQUEST
+    /// prompts as well as program output.
+    fn run_hard_with_input(src: &str, input: &[u8]) -> (String, String, Result<(), AnalError>) {
+        let program = match compile(src) {
+            Ok(p) => p,
+            Err(e) => return (String::new(), String::new(), Err(e)),
+        };
+        let mut input = std::io::Cursor::new(input);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut vm = VM::new();
+        vm.enable_hard_mode();
+        let result = vm.run(&program, &mut input, &mut out, &mut err);
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+            result,
+        )
+    }
+
+    #[test]
+    fn request_in_soft_mode_always_grants() {
+        // No prompt, no stderr, just TRUE on the stack.
+        let (out, err, result) = run(r#"PUSH "data.txt" PUSH "read" REQUEST
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "TRUE\n");
+        assert_eq!(err, "");
+    }
+
+    #[test]
+    fn request_in_hard_mode_yes_grants() {
+        let (out, err, result) = run_hard_with_input(
+            r#"PUSH "data.txt" PUSH "read" REQUEST
+DISCHARGE"#,
+            b"yes\n",
+        );
+        result.unwrap();
+        assert_eq!(out, "TRUE\n");
+        assert!(err.contains("READ \"data.txt\""), "stderr was: {err:?}");
+    }
+
+    #[test]
+    fn request_in_hard_mode_no_denies() {
+        let (out, _, result) = run_hard_with_input(
+            r#"PUSH "data.txt" PUSH "read" REQUEST
+DISCHARGE"#,
+            b"no\n",
+        );
+        result.unwrap();
+        assert_eq!(out, "FALSE\n");
+    }
+
+    #[test]
+    fn request_in_hard_mode_eof_denies() {
+        // No stdin reply at all — REQUEST defaults to FALSE rather
+        // than blowing up the program.
+        let (out, _, result) = run_hard_with_input(
+            r#"PUSH "data.txt" PUSH "read" REQUEST
+DISCHARGE"#,
+            b"",
+        );
+        result.unwrap();
+        assert_eq!(out, "FALSE\n");
+    }
+
+    #[test]
+    fn request_unknown_kind_is_rejection() {
+        let (_, _, result) = run(r#"PUSH "data.txt" PUSH "bogus" REQUEST"#);
+        let err = result.unwrap_err();
+        assert!(matches!(err, AnalError::Rejection { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn request_always_grants_for_the_rest_of_the_run() {
+        // First REQUEST: "always". Second REQUEST for the same target:
+        // no prompt expected, but still grants. We can't easily assert
+        // "no prompt was printed" without a more elaborate harness, so
+        // we check that one line of stdin input is enough to satisfy
+        // two REQUESTs — the second never asks.
+        let (out, _, result) = run_hard_with_input(
+            r#"PUSH "data.txt" PUSH "read" REQUEST DISCHARGE
+PUSH "data.txt" PUSH "read" REQUEST DISCHARGE"#,
+            b"always\n",
+        );
+        result.unwrap();
+        assert_eq!(out, "TRUE\nTRUE\n");
+    }
+
+    #[test]
+    fn hard_mode_ingest_without_request_is_outside() {
+        // We don't actually write a file because the OUTSIDE check
+        // fires first. INGEST a nonexistent path is fine: under hard
+        // mode the capability check happens before the filesystem.
+        let (_, _, result) = run_hard_with_input(r#"INGEST "secret.txt""#, b"");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AnalError::Outside {
+                    op: "INGEST",
+                    kind: "read",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn hard_mode_evacuate_without_request_is_outside() {
+        // EVACUATE wants STRING on the stack first.
+        let (_, _, result) = run_hard_with_input(
+            r#"PUSH "hello"
+EVACUATE "out.txt""#,
+            b"",
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AnalError::Outside {
+                    op: "EVACUATE",
+                    kind: "write",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn soft_mode_evacuate_succeeds_without_request() {
+        // Without --hard, no capability check happens at all. Write
+        // to a temp path to avoid touching the working dir.
+        let tmp = std::env::temp_dir().join("anal_hard_test_soft.txt");
+        let _ = std::fs::remove_file(&tmp);
+        let src = format!(
+            "PUSH \"hello\"\nEVACUATE \"{}\"",
+            tmp.to_string_lossy().replace('\\', "\\\\"),
+        );
+        let (_, _, result) = run(&src);
+        result.unwrap();
+        assert!(tmp.exists());
+        let _ = std::fs::remove_file(&tmp);
     }
 }

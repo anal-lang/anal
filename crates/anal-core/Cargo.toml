@@ -12,3 +12,4 @@ rust-version.workspace = true
 logos     = { workspace = true }
 ariadne   = { workspace = true }
 thiserror = { workspace = true }
+blake3    = { workspace = true }

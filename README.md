@@ -11,7 +11,7 @@
 [![CI](https://github.com/anal-lang/anal/actions/workflows/ci.yml/badge.svg)](https://github.com/anal-lang/anal/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/anal-lang/anal?label=release)](https://github.com/anal-lang/anal/releases/latest)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-informational)](LICENSE)
-[![Spec: v0.2](https://img.shields.io/badge/spec-v0.2-blue)](https://anal-lang.github.io/anal/)
+[![Spec: v0.4](https://img.shields.io/badge/spec-v0.4-blue)](https://anal-lang.github.io/anal/)
 
 > *Push-only by design, consent-enforced by default, append-oriented by conviction.*
 
@@ -151,10 +151,11 @@ What is not in v0.3 yet: a module system, FFI, or any form of concurrency. ANAL 
 - **v0.1** ✓ shipped — reference interpreter, full spec coverage of the core ops, install pipeline.
 - **v0.2** ✓ shipped — static type checker, interactive REPL, ad-hoc polymorphism for PASSAGEs.
 - **v0.3** ✓ shipped — `CAVITY` storage, runtime-sized `BUFFER`, byte I/O, string inspection, `OVER`/`ROT`/`NIP`, `LOAD`/`STORE`. ANAL is now Turing-complete in the strict sense; bigger programs are now writeable.
-- **v0.4** — a standard library written in ANAL itself, loaded via `INGEST`. Common patterns (string split, buffer-backed lists, formatted output) move out of the language and into prose.
-- **v0.5** — a proper module system. Multiple `.anal` files coexist with namespacing; `INGEST` finally means import.
+- **v0.4** — effect-typed consent checking, an audit ledger, and `--hard` mode. `PREP`, `CONSENT`, and `CLENCH` are lifted into the static checker; programs that reach `INSERT`/`EXTRACT`/`FLUSH`/`BUFSET`/`STORE` on a path that has not armed the required latch fail at probe time with the same error codes the runtime would have raised, joined across branches by a three-valued lattice. Optional `--ledger` writes a hash-chained `.sphlog` file: one fixed-size record per destructive op, replayable with `anal audit` to prove the recorded run has not been edited and that the source still matches. Optional `--hard` strips ambient filesystem authority: `INGEST` and `EVACUATE` raise `OUTSIDE` (E019) unless the program has authorised the exact target through the new `REQUEST` op, which prompts the user for consent at run time.
+- **v0.5** — a standard library written in ANAL itself, loaded via `INGEST`. Common patterns (string split, buffer-backed lists, formatted output) move out of the language and into prose.
+- **v0.6** — a proper module system. Multiple `.anal` files coexist with namespacing; `INGEST` finally means import.
 - **v1.0** — `analc`, the self-hosted compiler. ANAL compiling ANAL into `.sph` bytecode.
-- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§11](https://anal-lang.github.io/anal/#suppository); neither shipped.
+- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§14](https://anal-lang.github.io/anal/#suppository); neither shipped.
 
 No timelines. ANAL does not rush.
 

@@ -4,7 +4,7 @@
 use logos::Logos;
 
 /// A byte range in the source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -120,6 +120,8 @@ pub enum Token {
     Discharge,
     #[token("EVACUATE")]
     Evacuate,
+    #[token("REQUEST")]
+    Request,
     #[token("RECEIVE_BYTE")]
     ReceiveByte,
     #[token("EMIT_BYTE")]

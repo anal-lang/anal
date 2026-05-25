@@ -73,6 +73,28 @@ pub enum AnalError {
 
     #[error("HOLLOW: BUFFER requested a non-positive size ({size})")]
     Hollow { size: i64, span: Span },
+
+    #[error("BROKEN_CHAIN: ledger record {seq} prev_hash does not match prior record")]
+    BrokenChain { seq: u64 },
+
+    #[error("LEDGER_DRIFT: ledger source_hash does not match the supplied source")]
+    LedgerDrift,
+
+    #[error("LEDGER_GAP: ledger record {seq} names {ledger_op}, source carries {source_op} at that span")]
+    LedgerGap {
+        seq: u64,
+        ledger_op: &'static str,
+        source_op: &'static str,
+        span: Span,
+    },
+
+    #[error("OUTSIDE: {op} on {target:?} without an authorising REQUEST")]
+    Outside {
+        op: &'static str,
+        kind: &'static str,
+        target: String,
+        span: Span,
+    },
 }
 
 impl AnalError {
@@ -95,6 +117,10 @@ impl AnalError {
             AnalError::Mismatch { .. } => "E013",
             AnalError::CavityBreach { .. } => "E014",
             AnalError::Hollow { .. } => "E015",
+            AnalError::BrokenChain { .. } => "E016",
+            AnalError::LedgerDrift => "E017",
+            AnalError::LedgerGap { .. } => "E018",
+            AnalError::Outside { .. } => "E019",
             AnalError::Parse { .. } => "E000",
         }
     }
@@ -116,7 +142,13 @@ impl AnalError {
             | AnalError::Mismatch { span, .. }
             | AnalError::CavityBreach { span, .. }
             | AnalError::Hollow { span, .. }
+            | AnalError::LedgerGap { span, .. }
+            | AnalError::Outside { span, .. }
             | AnalError::Parse { span, .. } => *span,
+            // Ledger-level failures have no source span — they describe
+            // a problem with the ledger file itself. Use a zero span and
+            // skip the source label at render time.
+            AnalError::BrokenChain { .. } | AnalError::LedgerDrift => Span { start: 0, end: 0 },
         }
     }
 
@@ -135,19 +167,25 @@ impl AnalError {
         out: &mut W,
     ) -> std::io::Result<()> {
         let span = self.span();
-        let range = span.start..span.end;
-        let primary = Color::Red;
         let title = self.title();
 
-        let mut builder = Report::build(ReportKind::Error, source_id, range.start)
+        let mut builder = Report::build(ReportKind::Error, source_id, span.start)
             .with_code(self.code())
             .with_config(Config::default().with_color(color))
             .with_message(title);
 
-        let label = Label::new((source_id, range))
-            .with_message(self.label_message())
-            .with_color(primary);
-        builder = builder.with_label(label);
+        // Ledger-level failures carry no useful source span — attaching
+        // a label would point at offset 0 for no reason and trip
+        // ariadne's "start == end" assertion. Render them as a plain
+        // message, with the help/note callouts only.
+        if span.end > span.start {
+            let label = Label::new((source_id, span.start..span.end))
+                .with_message(self.label_message())
+                .with_color(Color::Red);
+            builder = builder.with_label(label);
+        } else {
+            builder = builder.with_message(format!("{title}: {}", self.label_message()));
+        }
 
         if let Some(help) = self.help_text() {
             builder = builder.with_help(help);
@@ -178,6 +216,10 @@ impl AnalError {
             AnalError::Mismatch { .. } => "MISMATCH",
             AnalError::CavityBreach { .. } => "CAVITY_BREACH",
             AnalError::Hollow { .. } => "HOLLOW",
+            AnalError::BrokenChain { .. } => "BROKEN_CHAIN",
+            AnalError::LedgerDrift => "LEDGER_DRIFT",
+            AnalError::LedgerGap { .. } => "LEDGER_GAP",
+            AnalError::Outside { .. } => "OUTSIDE",
             AnalError::Parse { .. } => "PARSE",
         }
     }
@@ -210,6 +252,27 @@ impl AnalError {
             }
             AnalError::Hollow { size, .. } => {
                 format!("BUFFER size must be positive (got {size})")
+            }
+            AnalError::BrokenChain { seq } => {
+                format!("record {seq}: prev_hash does not match prior record's this_hash")
+            }
+            AnalError::LedgerDrift => {
+                "ledger source_hash does not match the supplied source".into()
+            }
+            AnalError::LedgerGap {
+                seq,
+                ledger_op,
+                source_op,
+                ..
+            } => {
+                format!(
+                    "record {seq}: ledger says {ledger_op}, source has {source_op} at this span"
+                )
+            }
+            AnalError::Outside {
+                op, kind, target, ..
+            } => {
+                format!("{op} on {target:?} (kind {kind:?}) without an authorising REQUEST")
             }
             AnalError::Parse { message, .. } => message.clone(),
         }
@@ -277,6 +340,18 @@ impl AnalError {
             AnalError::Hollow { .. } => {
                 Some("a CAVITY of zero cells cannot be entered.")
             }
+            AnalError::BrokenChain { .. } => Some(
+                "the ledger has been edited after the fact. ANAL does not forget.",
+            ),
+            AnalError::LedgerDrift => Some(
+                "the source file does not match the one the ledger was recorded against.",
+            ),
+            AnalError::LedgerGap { .. } => Some(
+                "the source has drifted since the ledger was recorded.",
+            ),
+            AnalError::Outside { .. } => Some(
+                "the program reached outside what was granted. in --hard mode, every I/O target must be authorised by an explicit REQUEST.",
+            ),
             _ => None,
         }
     }

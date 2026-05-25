@@ -20,6 +20,7 @@ pub mod ast;
 pub mod check;
 pub mod compiler;
 pub mod error;
+pub mod ledger;
 pub mod lexer;
 pub mod op;
 pub mod parser;
@@ -29,9 +30,13 @@ pub mod value;
 pub mod vm;
 
 pub use error::AnalError;
+pub use ledger::{
+    hash_source, LedgerError, LedgerReader, LedgerRecord, LedgerSink, OpTag as LedgerOpTag,
+    TypeTag as LedgerTypeTag,
+};
 pub use op::{Instr, Op, Program};
 pub use parser::{compile, compile_fragment, is_unfinished, Fragment};
 pub use session::Session;
 pub use token::Span;
 pub use value::Value;
-pub use vm::VM;
+pub use vm::{BoxedLedger, VM};

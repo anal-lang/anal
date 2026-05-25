@@ -536,6 +536,9 @@ footer {
     <a class="nav-link" href="#types">Type System</a>
     <a class="nav-link" href="#strings">String Inspection</a>
     <a class="nav-link" href="#storage">External Storage <span class="nav-badge nb-blue">v0.3</span></a>
+    <a class="nav-link" href="#static">Static Checking <span class="nav-badge nb-blue">v0.4</span></a>
+    <a class="nav-link" href="#ledger">The Ledger <span class="nav-badge nb-blue">v0.4</span></a>
+    <a class="nav-link" href="#hard">Hard Mode <span class="nav-badge nb-blue">v0.4</span></a>
     <a class="nav-link" href="#errors">Error Reference</a>
   </div>
 
@@ -1252,12 +1255,218 @@ footer {
     <div class="callout-label">Note</div>
     A CAVITY participates in the type checker. <code>BUFGET</code> on a STRING raises MISMATCH at probe time. A PASSAGE that returns a CAVITY declares it the same way it declares any other return: by leaving it on the stack at <code>EXIT</code>.
   </div>
+
+  <div class="callout blue" style="margin: 1.5rem 0;">
+    <div class="callout-label">v0.4</div>
+    The consent ceremony — <code>PREP</code>, <code>CONSENT</code>, <code>CLENCH</code> — is itself checked statically. A <code>BUFSET</code> or <code>STORE</code> on a path that does not arm both latches fails at probe time, with the same <code>TIGHTNESS</code> or <code>REFUSAL</code> the runtime would have raised. See <a href="#static">§10 Static Checking</a> for the full treatment.
+  </div>
 </div>
 
-<!-- §10 Errors -->
-<div class="section" id="errors">
+<!-- §10 Static Checking -->
+<div class="section" id="static">
   <div class="section-header">
     <span class="section-num">10</span>
+    <span class="section-title">Static Checking</span>
+  </div>
+
+  <p>Every program runs through a static check between parse and execute. The check is called <strong>probing</strong> — invoked directly with <code>anal probe &lt;file&gt;</code>, and implicitly by every <code>anal run</code>. A program that fails the probe never reaches the VM.</p>
+
+  <p>The probe tracks two things in parallel: an abstract <strong>stack</strong>, and an abstract <strong>consent effect</strong>. They are independent. A program may be well-typed and still fail the effect check; it may satisfy the effect check and still fail the type check. Both must pass.</p>
+
+  <h2>The abstract stack</h2>
+
+  <p>At each program point the checker holds an ordered sequence of types — one slot per value the runtime would have. The slot types are <code>INT</code>, <code>FLOAT</code>, <code>STRING</code>, <code>BOOL</code>, <code>BLOC</code>, <code>CAVITY</code>, and <code>&lt;any&gt;</code>. <code>&lt;any&gt;</code> arises at control-flow merges where two arms disagree on the type of a slot; it is matchable against any concrete type, and ops with a precise type rule on that slot will still execute under it.</p>
+
+  <p>Each op carries a typing rule. <code>ADD</code> on two INTs yields an INT; on two FLOATs, a FLOAT; on two STRINGs, concatenation. Any other pairing raises <code>MISMATCH</code>. <code>EXTRACT</code> shrinks the stack by one; <code>INSERT</code> grows it by one; <code>FLUSH</code> empties it. <code>PASSAGE</code> bodies are re-checked at every call site against the caller's actual stack, which gives ad-hoc polymorphism without generics — <code>PASSAGE square: DUP MUL EXIT</code> type-checks on both INTs and FLOATs because each call site walks the body afresh.</p>
+
+  <h2>The consent effect</h2>
+
+  <p>Alongside the abstract stack, the checker walks a three-field <strong>effect</strong>: the state of <code>PREP</code>, the state of <code>CONSENT</code>, and the current <code>CLENCH</code> depth. Each latch is one of three values — <strong>Unarmed</strong>, <strong>Armed</strong>, or <strong>Top</strong>. <strong>Top</strong> is the join of disagreeing branches: armed on one path, unarmed on another, neither provable.</p>
+
+  <p>A destructive op — <code>INSERT</code>, <code>EXTRACT</code>, <code>FLUSH</code>, <code>BUFSET</code>, <code>STORE</code> — requires its precondition latch to be <strong>Armed</strong> on every path that reaches it. Both <strong>Unarmed</strong> and <strong>Top</strong> are rejected: the checker insists on a positive proof of arming, not the absence of evidence against it.</p>
+
+  <ul style="margin: 1rem 0 1rem 1.5rem; padding-left: 1rem;">
+    <li><code>INSERT</code> without armed <code>PREP</code> raises <strong>TIGHTNESS</strong> (E001) at probe time.</li>
+    <li><code>EXTRACT</code>, <code>FLUSH</code> without armed <code>CONSENT</code> raise <strong>REFUSAL</strong> (E004) at probe time.</li>
+    <li><code>BUFSET</code>, <code>STORE</code> require both; missing either raises the corresponding error.</li>
+    <li>Any destructive op inside a CLENCH raises <strong>LOCKDOWN</strong> (E005), as does any op that cannot prove the stack is unclenched on every reaching path.</li>
+  </ul>
+
+  <p>The same error codes the runtime emits are emitted by the checker; the difference is only where the failure is detected. A program that probes clean cannot raise <code>TIGHTNESS</code> or <code>REFUSAL</code> at runtime, and cannot raise <code>LOCKDOWN</code> in any case the checker was able to decide.</p>
+
+  <h2>Joins at control flow</h2>
+
+  <p>At an <code>IF_TIGHT</code> or <code>IF_LOOSE</code> merge, the checker walks the arm body on copies of both the stack and the effect, then joins the result back into the outer state. Two latches in the same state stay in that state; latches that disagree raise to <strong>Top</strong>. The <code>CLENCH</code> depth is preserved when both paths agree on the depth, and collapses to "unknown" when they do not.</p>
+
+  <p>A <code>DILATE</code> loop is checked the same way, with the entry effect joined against the body-exit effect — the body may run zero times or many. Arming that the body never disturbs survives the loop; arming the body clears, even once, does not.</p>
+
+  <p>The consequence is precise but conservative. Arming the same latch on both arms of an <code>IF_TIGHT</code> survives the merge:</p>
+
+<pre><span class="kw">PREP</span>
+<span class="kw">PUSH</span> cond
+<span class="kw">IF_LOOSE</span> [
+  <span class="kw">RELAX</span>
+  <span class="kw">PREP</span>
+]
+<span class="kw">INSERT</span> <span class="num">1</span> <span class="num">99</span>  <span class="cmt">; legal — PREP armed on every path</span></pre>
+
+  <p>Arming on one path and not the other does not:</p>
+
+<pre><span class="kw">PUSH</span> cond
+<span class="kw">IF_TIGHT</span> [ <span class="kw">PREP</span> ]
+<span class="kw">INSERT</span> <span class="num">1</span> <span class="num">99</span>  <span class="cmt">; TIGHTNESS at probe time</span></pre>
+
+  <h2>What the checker does not prove</h2>
+
+  <p>The checker is about types and arming, not values. <code>PUSH 0 DIV</code> is well-typed; it raises <code>REJECTION</code> at runtime when the divisor is read. A <code>RECEIVE</code> followed by <code>"yes" EQ</code> may or may not produce <code>TRUE</code> — that is for the user, not the checker. And <code>EVACUATE</code>'s consent requirement is conditional on whether the target file exists, which the checker cannot know; that check stays at runtime.</p>
+
+  <p>The runtime checks for <code>TIGHTNESS</code>, <code>REFUSAL</code>, <code>LOCKDOWN</code>, and <code>PREMATURE_RELEASE</code> remain in place. They protect against the cases the checker is too coarse to catch — dynamic <code>BLOC</code> bodies, conditional file overwrites, and any future op whose preconditions depend on runtime values. A program that fails the probe never runs; a program that probes clean still runs through the same runtime guards.</p>
+</div>
+
+<!-- §11 The Ledger -->
+<div class="section" id="ledger">
+  <div class="section-header">
+    <span class="section-num">11</span>
+    <span class="section-title">The Ledger</span>
+  </div>
+
+  <p>The runtime checks consent. It does not, by default, remember that it asked. With <code>--ledger</code>, every destructive operation a program performs is appended to a hash-chained binary file — the <strong>.sphlog</strong>. <code>anal audit</code> reads it back and verifies that the recorded operations match the source they were recorded against and that no entry has been edited since.</p>
+
+  <p>The ledger is optional. Programs that do not opt in run exactly as before. Programs that do opt in pay one fixed-size append per destructive op.</p>
+
+  <h2>Recording a run</h2>
+
+<pre><span class="t-prompt">$ </span>anal run --ledger run.sphlog program.anal</pre>
+
+  <p>The named file must not already exist; <code>anal</code> refuses to overwrite a ledger, since a single ledger pairs one-to-one with a single run. The header is written immediately and includes a blake3 hash of the source file. Each subsequent destructive op (<code>INSERT</code>, <code>EXTRACT</code>, <code>FLUSH</code>, <code>BUFSET</code>, <code>STORE</code>, and an <code>EVACUATE</code> that overwrote an existing file) appends one fixed-size record. Failed ops do not appear in the log — the ledger records what was <em>done</em>, not what was <em>attempted</em>.</p>
+
+  <h2>Auditing a run</h2>
+
+<pre><span class="t-prompt">$ </span>anal audit run.sphlog program.anal
+<span class="t-ok">✓ run.sphlog — 4 record(s) verified against program.anal.</span></pre>
+
+  <p>The audit performs three checks, in order, and fails fast on the first that does not pass:</p>
+
+  <ul style="margin: 1rem 0 1rem 1.5rem; padding-left: 1rem;">
+    <li><strong>Source identity.</strong> The ledger's recorded <code>source_hash</code> must equal the blake3 of the supplied source. A mismatch raises <code>LEDGER_DRIFT</code> (E017) — the two files do not belong together.</li>
+    <li><strong>Chain integrity.</strong> Each record carries the prior record's hash. The audit walks the chain; a hash that does not match the prior record raises <code>BROKEN_CHAIN</code> (E016). An editor who changes one past record invalidates every subsequent <code>prev_hash</code>.</li>
+    <li><strong>Source agreement.</strong> Each record names an op and a byte span in the source. The audit compiles the source, locates the op at that span, and confirms it matches. A mismatch raises <code>LEDGER_GAP</code> (E018) — the source has changed since the ledger was recorded.</li>
+  </ul>
+
+  <h2>.sphlog file format</h2>
+
+  <p>All multi-byte integers are little-endian. The format is fixed-shape, append-only, and self-describing.</p>
+
+  <h3 style="margin-top: 1rem;">Header (40 bytes, once)</h3>
+
+<pre>offset  size  field         notes
+  0      4    magic         b"SPHL"
+  4      1    version       0x01
+  5      3    reserved      zero
+  8     32    source_hash   blake3 of source file at run time</pre>
+
+  <h3 style="margin-top: 1rem;">Record (72 bytes, repeated)</h3>
+
+<pre>offset  size  field         notes
+  0      8    seq           u64, 0-based
+  8      8    ts_micros     i64, unix epoch microseconds
+ 16      1    op_tag        1=INSERT 2=EXTRACT 3=FLUSH
+                            4=BUFSET 5=STORE   6=EVACUATE
+ 17      1    reserved      zero
+ 18      4    span_start    u32, byte offset into source
+ 22      4    span_end      u32, byte offset into source
+ 26      4    stack_depth   u32, depth *before* the op fired
+ 30      1    top_n         0..=4, slots of stack types recorded
+ 31      4    top_types     first top_n are valid:
+                            1=INT 2=FLOAT 3=STRING
+                            4=BOOL 5=BLOC 6=CAVITY
+ 35      5    reserved      zero
+ 40     32    prev_hash     this_hash of the prior record;
+                            zeros for the genesis record</pre>
+
+  <p>The <code>this_hash</code> of each record is <code>blake3</code> over bytes 0..72 — including the <code>prev_hash</code> just written. It is not stored on disk; readers recompute it. This is what makes the chain self-validating: any byte changed in record <em>n</em> changes the hash that record <em>n+1</em> expected, and the audit halts at record <em>n+1</em>.</p>
+
+  <p>There is no record count in the header. Readers iterate until EOF. A torn write that leaves a partial record at the tail is detected and reported as <code>RecordTruncated</code>.</p>
+
+  <h2>What is recorded, and what is not</h2>
+
+  <p>Each record holds an op, a source span, a pre-op stack depth, and up to four top-of-stack type tags. <strong>Values are not recorded.</strong> The ledger captures the shape and the act, never the contents — a ledger from a production run carries no payload data, so it is safe to ship alongside a bug report or store with the source.</p>
+
+  <p>Arming operations — <code>PREP</code>, <code>CONSENT</code>, <code>CLENCH</code>, <code>RELEASE</code>, <code>RELAX</code> — are not logged. The ledger records consummated acts, not preparations. A program that arms and then aborts before acting leaves no audit trail; this is correct, because no destruction occurred.</p>
+
+  <p>An <code>EVACUATE</code> that creates a new file is not logged either. Creation is benign; the ledger tracks consent-bearing acts.</p>
+
+  <div class="callout blue" style="margin: 1.5rem 0;">
+    <div class="callout-label">On signing</div>
+    The hash chain detects edits, not impersonation. A v0.5 follow-up will add Ed25519 signatures keyed by an operator identity; for now, a <code>.sphlog</code> proves only that its contents have not been altered since they were written, not that any particular party wrote them. For local-machine audits this is sufficient. For shared infrastructure, treat the ledger as authenticated by the medium it travelled on (signed releases, attested CI runs) until v0.5 lands.
+  </div>
+</div>
+
+<!-- §12 Hard Mode -->
+<div class="section" id="hard">
+  <div class="section-header">
+    <span class="section-num">12</span>
+    <span class="section-title">Hard Mode</span>
+  </div>
+
+  <p>The interpreter, by default, runs with ambient filesystem authority: any program can <code>INGEST</code> any readable file and <code>EVACUATE</code> to any writable path the operating system permits. This matches the behaviour of every scripting language since shell. It is not what every program wants.</p>
+
+  <p><strong>Hard mode</strong>, engaged with <code>anal run --hard file.anal</code>, strips that authority. In hard mode there is no ambient access to the filesystem. <code>INGEST</code> and <code>EVACUATE</code> raise <code>OUTSIDE</code> (E019) unless the program has explicitly asked for, and the user has explicitly granted, the exact target.</p>
+
+  <p>Asking is done with a new op: <code>REQUEST</code>.</p>
+
+  <h2>REQUEST</h2>
+
+  <p>Stack effect: <code>( target:STRING kind:STRING -- granted:BOOL )</code>.</p>
+
+  <p>Three kinds are recognised: <code>"read"</code>, <code>"write"</code>, <code>"net"</code>. Unknown kinds raise <code>REJECTION</code> at runtime — the program is asking for something the runtime cannot enforce. (The <code>"net"</code> kind parses and grants today but no op consumes it yet; network primitives are a planned follow-up.)</p>
+
+  <p>In soft mode (the default), <code>REQUEST</code> trivially pushes <code>TRUE</code>. No prompt fires, no stderr is touched. A program written for hard mode runs identically under soft mode — it simply never sees a denial.</p>
+
+  <p>In hard mode, <code>REQUEST</code> writes a two-line prompt to stderr and reads one line of reply from stdin:</p>
+
+<pre>ANAL requests capability: READ "config.txt"
+  Grant? (yes / no / always)</pre>
+
+  <p>Recognised replies, case-insensitive:</p>
+
+  <ul style="margin: 1rem 0 1rem 1.5rem; padding-left: 1rem;">
+    <li><code>yes</code> / <code>y</code> — grant once. The capability is consumed by the next matching I/O op only.</li>
+    <li><code>always</code> / <code>a</code> — grant for the rest of the run. The next <code>REQUEST</code> for the same exact <code>(kind, target)</code> pair will not prompt and returns <code>TRUE</code> immediately.</li>
+    <li><code>no</code>, anything else, or EOF — push <code>FALSE</code>. The program decides what to do; the runtime does not abort on a denial.</li>
+  </ul>
+
+  <h2>What the gates protect</h2>
+
+  <p>Under hard mode, two ops consult the granted set before doing their work:</p>
+
+  <ul style="margin: 1rem 0 1rem 1.5rem; padding-left: 1rem;">
+    <li><code>INGEST &lt;path&gt;</code> requires the path in the <code>read</code> set. Failure raises <code>OUTSIDE</code> (E019) before the file is touched.</li>
+    <li><code>EVACUATE &lt;path&gt;</code> requires the path in the <code>write</code> set. Failure raises <code>OUTSIDE</code> before any disk activity. The existing CONSENT requirement for overwriting an existing file still applies on top of the capability check.</li>
+  </ul>
+
+  <p>Other I/O — <code>DISCHARGE</code>, <code>EXPEL</code>, <code>RECEIVE</code>, <code>EMIT_BYTE</code>, <code>RECEIVE_BYTE</code> — talks to the terminal that launched the program and is not gated. Writing to the terminal that asked is not reaching outside.</p>
+
+  <h2>Path matching</h2>
+
+  <p>Matches are exact and string-literal. <code>REQUEST "data/" "read"</code> grants <code>data/</code> and nothing else; it does not grant <code>data/file.txt</code> or <code>data/sub/</code>. A program that needs to read several files must request each by name. This is deliberate — the point of <code>--hard</code> is that broad authority is not the default.</p>
+
+  <p>A future RFC may add pattern matching (glob, prefix) if the deny-by-default ergonomics prove too tight in practice. For now, exact-match is the only form.</p>
+
+  <h2>Composing with the ledger</h2>
+
+  <p>A run can use both <code>--hard</code> and <code>--ledger</code> at once. The ledger records destructive ops as it always does; the capability layer prevents I/O against ungranted targets independently. <code>REQUEST</code> outcomes are not logged to the ledger — the ledger records consummated <em>destructive</em> acts, not capability decisions. (A separate capability ledger may land in v0.5.)</p>
+
+  <div class="callout blue" style="margin: 1.5rem 0;">
+    <div class="callout-label">Note</div>
+    Hard mode is interactive by design: the user is in the loop on every capability decision. There is no flag to pre-grant capabilities from the command line — that would defeat the point. Unattended use (CI, batch processing) will get a separate <code>--grants &lt;file&gt;</code> mechanism in v0.5; the design is deliberately deferred until the interactive shape has time to settle.
+  </div>
+</div>
+
+<!-- §13 Errors -->
+<div class="section" id="errors">
+  <div class="section-header">
+    <span class="section-num">13</span>
     <span class="section-title">Error Reference</span>
   </div>
 
@@ -1267,7 +1476,7 @@ footer {
     <div class="err-card">
       <div class="err-name">TIGHTNESS</div>
       <div class="err-code">E001</div>
-      <div class="err-desc">INSERT attempted without prior PREP. Always prepare.</div>
+      <div class="err-desc">INSERT attempted without prior PREP. Always prepare. Caught at probe time when provable; at runtime otherwise.</div>
     </div>
     <div class="err-card">
       <div class="err-name">EMPTINESS</div>
@@ -1282,12 +1491,12 @@ footer {
     <div class="err-card">
       <div class="err-name">REFUSAL</div>
       <div class="err-code">E004</div>
-      <div class="err-desc">Destructive operation attempted without CONSENT.</div>
+      <div class="err-desc">Destructive operation attempted without CONSENT. Caught at probe time when provable; at runtime otherwise.</div>
     </div>
     <div class="err-card">
       <div class="err-name">LOCKDOWN</div>
       <div class="err-code">E005</div>
-      <div class="err-desc">Write attempted on a CLENCHed stack. RELEASE first.</div>
+      <div class="err-desc">Write attempted on a CLENCHed stack. RELEASE first. Caught at probe time when the depth is known; at runtime otherwise.</div>
     </div>
     <div class="err-card">
       <div class="err-name">PENETRATION_DEPTH</div>
@@ -1339,13 +1548,33 @@ footer {
       <div class="err-code">E015</div>
       <div class="err-desc"><code>BUFFER</code> requested a non-positive size. A CAVITY of zero cells cannot be entered.</div>
     </div>
+    <div class="err-card">
+      <div class="err-name">BROKEN_CHAIN</div>
+      <div class="err-code">E016</div>
+      <div class="err-desc">A <code>.sphlog</code> ledger record's <code>prev_hash</code> does not match the prior record. The ledger has been edited after the fact. ANAL does not forget.</div>
+    </div>
+    <div class="err-card">
+      <div class="err-name">LEDGER_DRIFT</div>
+      <div class="err-code">E017</div>
+      <div class="err-desc">A <code>.sphlog</code> ledger's <code>source_hash</code> does not match the supplied source. The two files do not belong together.</div>
+    </div>
+    <div class="err-card">
+      <div class="err-name">LEDGER_GAP</div>
+      <div class="err-code">E018</div>
+      <div class="err-desc">A <code>.sphlog</code> ledger names an op at a span where the source carries a different op (or none). The source has drifted since the ledger was recorded.</div>
+    </div>
+    <div class="err-card">
+      <div class="err-name">OUTSIDE</div>
+      <div class="err-code">E019</div>
+      <div class="err-desc">An <code>INGEST</code> or <code>EVACUATE</code> reached a target the program had not authorised with <code>REQUEST</code>. Only raised in <code>--hard</code> mode.</div>
+    </div>
   </div>
 </div>
 
-<!-- §11 suppository -->
+<!-- §14 suppository -->
 <div class="section" id="suppository">
   <div class="section-header">
-    <span class="section-num">11</span>
+    <span class="section-num">14</span>
     <span class="section-title">suppository</span>
   </div>
 
@@ -1484,10 +1713,10 @@ footer {
   </table>
 </div>
 
-<!-- §12 Contributing -->
+<!-- §15 Contributing -->
 <div class="section" id="contributing">
   <div class="section-header">
-    <span class="section-num">12</span>
+    <span class="section-num">15</span>
     <span class="section-title">Contributing Policy</span>
   </div>
 
@@ -1528,10 +1757,10 @@ footer {
   <p>The RFC PASSAGE process typically takes <strong>6–18 months</strong>. ANAL does not rush. Haste causes TIGHTNESS errors.</p>
 </div>
 
-<!-- §13 Examples -->
+<!-- §16 Examples -->
 <div class="section" id="examples">
   <div class="section-header">
-    <span class="section-num">13</span>
+    <span class="section-num">16</span>
     <span class="section-title">Extended Examples</span>
   </div>
 
@@ -1609,10 +1838,10 @@ footer {
 <span class="kw">DISCHARGE</span> <span class="kw">POP</span></pre>
 </div>
 
-<!-- §14 FAQ -->
+<!-- §17 FAQ -->
 <div class="section" id="faq">
   <div class="section-header">
-    <span class="section-num">14</span>
+    <span class="section-num">17</span>
     <span class="section-title">FAQ</span>
   </div>
 
