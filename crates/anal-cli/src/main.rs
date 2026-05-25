@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anal_core::{
-    compile, hash_source, AnalError, BoxedLedger, Instr, LedgerOpTag, LedgerReader, LedgerSink, Op,
-    Program, Span, VM,
+    compile, hash_source, AnalError, BoxedLedger, Instr, LedgerOpTag, LedgerReader, LedgerRecord,
+    LedgerSink, Op, Program, Span, VM,
 };
 use clap::{ArgAction, Parser, Subcommand};
 use std::collections::HashMap;
@@ -85,6 +85,11 @@ enum Cmd {
         /// Path to the source file the ledger was recorded against.
         #[arg(value_name = "SOURCE")]
         source: PathBuf,
+        /// After verification, print one line per record: seq, timestamp,
+        /// op, file:line:col, pre-op stack shape. The ledger is read-only;
+        /// this only affects what `anal audit` prints.
+        #[arg(long)]
+        examine: bool,
     },
     /// Print version and build information.
     Version,
@@ -121,7 +126,11 @@ fn main() -> ExitCode {
         }
         Cmd::Run { file, ledger, hard } => run(&file, ledger.as_deref(), hard, flags),
         Cmd::Probe { file } => probe(&file, flags),
-        Cmd::Audit { ledger, source } => audit(&ledger, &source, flags),
+        Cmd::Audit {
+            ledger,
+            source,
+            examine,
+        } => audit(&ledger, &source, examine, flags),
     }
 }
 
@@ -269,7 +278,7 @@ fn open_ledger(ledger_path: &Path, source: &str) -> Result<BoxedLedger, ExitCode
     }
 }
 
-fn audit(ledger_path: &Path, source_path: &Path, flags: Flags) -> ExitCode {
+fn audit(ledger_path: &Path, source_path: &Path, examine: bool, flags: Flags) -> ExitCode {
     let source = match read_source(source_path) {
         Ok(s) => s,
         Err(code) => return code,
@@ -310,7 +319,10 @@ fn audit(ledger_path: &Path, source_path: &Path, flags: Flags) -> ExitCode {
     };
     let destructive = collect_destructive_ops(&program);
 
-    let mut count = 0u64;
+    // Collect verified records as we walk. Holding them lets
+    // `--examine` print without re-reading the file; the cost is
+    // O(records) memory, which is fine for any realistic audit.
+    let mut records: Vec<LedgerRecord> = Vec::new();
     loop {
         let record = match reader.next_record() {
             Ok(Some(r)) => r,
@@ -336,7 +348,7 @@ fn audit(ledger_path: &Path, source_path: &Path, flags: Flags) -> ExitCode {
         };
         match destructive.get(&span) {
             Some(source_op) if *source_op == record.op => {
-                count += 1;
+                records.push(record);
             }
             Some(source_op) => {
                 let err = AnalError::LedgerGap {
@@ -368,12 +380,178 @@ fn audit(ledger_path: &Path, source_path: &Path, flags: Flags) -> ExitCode {
             "OK"
         };
         println!(
-            "{mark} {} — {count} record(s) verified against {}.",
+            "{mark} {} — {} record(s) verified against {}.",
             ledger_path.display(),
+            records.len(),
             source_path.display(),
         );
     }
+
+    if examine {
+        print_examined_records(&records, source_path, &source);
+    }
+
     ExitCode::SUCCESS
+}
+
+/// Pretty-print every verified ledger record. Called after audit
+/// succeeds, so we know each record is decodable and consistent with
+/// the source. Columns: seq, timestamp, op, file:line:col, pre-op
+/// stack shape. Output is plain text (no ANSI) so it pipes cleanly.
+fn print_examined_records(records: &[LedgerRecord], source_path: &Path, source: &str) {
+    if records.is_empty() {
+        return;
+    }
+    let line_starts = build_line_starts(source);
+    let source_name = source_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source_path.display().to_string());
+
+    // Format every row first so we can compute consistent column widths.
+    let rows: Vec<(String, String, String, String, String)> = records
+        .iter()
+        .map(|r| {
+            let (line, col) = byte_offset_to_line_col(&line_starts, r.span_start as usize);
+            (
+                format!("{}", r.seq),
+                format_iso8601_utc(r.ts_micros),
+                r.op.name().to_string(),
+                format!("{source_name}:{line}:{col}"),
+                format_stack_shape(&r.top_types, r.stack_depth),
+            )
+        })
+        .collect();
+
+    let widths = column_widths(&rows, &["seq", "timestamp", "op", "location", "stack"]);
+
+    println!();
+    println!(
+        "  {:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  stack",
+        "seq",
+        "timestamp",
+        "op",
+        "location",
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2],
+        w3 = widths[3],
+    );
+    println!(
+        "  {}  {}  {}  {}  {}",
+        "─".repeat(widths[0]),
+        "─".repeat(widths[1]),
+        "─".repeat(widths[2]),
+        "─".repeat(widths[3]),
+        "─".repeat(widths[4]),
+    );
+    for (seq, ts, op, loc, stack) in &rows {
+        println!(
+            "  {:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {}",
+            seq,
+            ts,
+            op,
+            loc,
+            stack,
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+            w3 = widths[3],
+        );
+    }
+}
+
+/// Width per column = max(header, max cell width).
+fn column_widths(
+    rows: &[(String, String, String, String, String)],
+    headers: &[&str; 5],
+) -> [usize; 5] {
+    let mut w = [0usize; 5];
+    for (i, h) in headers.iter().enumerate() {
+        w[i] = h.chars().count();
+    }
+    for (a, b, c, d, e) in rows {
+        w[0] = w[0].max(a.chars().count());
+        w[1] = w[1].max(b.chars().count());
+        w[2] = w[2].max(c.chars().count());
+        w[3] = w[3].max(d.chars().count());
+        w[4] = w[4].max(e.chars().count());
+    }
+    w
+}
+
+/// Vector of byte offsets at which each line starts. Index 0 is 0
+/// (start of file); subsequent entries are byte offsets just past each
+/// '\n'. Lets `byte_offset_to_line_col` binary-search a span back to
+/// a (line, col) pair.
+fn build_line_starts(source: &str) -> Vec<usize> {
+    let mut out = vec![0usize];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            out.push(i + 1);
+        }
+    }
+    out
+}
+
+/// 1-based (line, col) for a byte offset. Col is measured in bytes
+/// from the start of the line (matches what `ariadne` does, which is
+/// what the rest of the diagnostics already show).
+fn byte_offset_to_line_col(line_starts: &[usize], offset: usize) -> (usize, usize) {
+    // Find the last line_start that is <= offset.
+    let idx = match line_starts.binary_search(&offset) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    let line = idx + 1;
+    let col = offset - line_starts[idx] + 1;
+    (line, col)
+}
+
+/// Convert micros-since-unix-epoch into "YYYY-MM-DDTHH:MM:SS.uuuuuuZ".
+/// No dependency on `chrono` or `time` — the audit timestamp is a
+/// small surface and we already control the format on the writer side.
+fn format_iso8601_utc(ts_micros: i64) -> String {
+    if ts_micros < 0 {
+        return "(pre-epoch)".to_string();
+    }
+    let total_secs = ts_micros / 1_000_000;
+    let micros = (ts_micros % 1_000_000) as u32;
+    let secs_in_day = (total_secs % 86_400) as u32;
+    let days_since_epoch = total_secs / 86_400;
+    let (hour, rem) = (secs_in_day / 3600, secs_in_day % 3600);
+    let (minute, second) = (rem / 60, rem % 60);
+    let (y, mo, d) = days_since_epoch_to_ymd(days_since_epoch);
+    format!("{y:04}-{mo:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z",)
+}
+
+/// Convert days since 1970-01-01 to (year, month, day), Gregorian.
+/// Algorithm from Hinnant's date library (public domain), adapted.
+fn days_since_epoch_to_ymd(days: i64) -> (i32, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m, d)
+}
+
+/// Render the recorded top-of-stack types as a bracketed list, with
+/// the actual depth appended when more slots existed than were
+/// captured (e.g. `[INT, INT, INT, INT, ...] depth=12`).
+fn format_stack_shape(top_types: &[anal_core::LedgerTypeTag], depth: u32) -> String {
+    let names: Vec<&str> = top_types.iter().map(|t| t.name()).collect();
+    let depth = depth as usize;
+    if depth == top_types.len() {
+        format!("[{}]", names.join(", "))
+    } else {
+        format!("[{}, ...] depth={depth}", names.join(", "))
+    }
 }
 
 /// Walk `program` and collect every destructive op's span, paired with

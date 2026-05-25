@@ -1359,6 +1359,22 @@ footer {
     <li><strong>Source agreement.</strong> Each record names an op and a byte span in the source. The audit compiles the source, locates the op at that span, and confirms it matches. A mismatch raises <code>LEDGER_GAP</code> (E018) — the source has changed since the ledger was recorded.</li>
   </ul>
 
+  <h2>Examining a verified ledger</h2>
+
+  <p>By default <code>anal audit</code> only prints a one-line verification result. Pass <code>--examine</code> to additionally print every verified record as an aligned table:</p>
+
+<pre><span class="t-prompt">$ </span>anal audit --examine run.sphlog program.anal
+<span class="t-ok">✓ run.sphlog — 4 record(s) verified against program.anal.</span>
+
+  seq  timestamp                    op       location               stack
+  ───  ───────────────────────────  ───────  ─────────────────────  ─────────────────────────────────
+  0    2026-05-25T16:54:01.098644Z  INSERT   ledger_demo.anal:27:1  [INT, INT, INT]
+  1    2026-05-25T16:54:01.098649Z  INSERT   ledger_demo.anal:32:1  [INT, INT, INT, INT]
+  2    2026-05-25T16:54:01.098653Z  EXTRACT  ledger_demo.anal:37:1  [INT, INT, INT, INT, ...] depth=5
+  3    2026-05-25T16:54:01.098688Z  FLUSH    ledger_demo.anal:47:1  [INT, INT, INT, INT]</pre>
+
+  <p>Columns are: the sequence number, the UTC timestamp the op fired (microsecond precision), the op name, the source file with the 1-based line and column of the recorded span, and the pre-op stack shape. The stack column lists up to four top-of-stack types in top-first order; when the actual depth exceeded four, an ellipsis and a <code>depth=N</code> suffix appear. <code>--examine</code> is read-only — verification still fails fast on a chain break or source drift, and no table is printed in that case.</p>
+
   <h2>.sphlog file format</h2>
 
   <p>All multi-byte integers are little-endian. The format is fixed-shape, append-only, and self-describing.</p>
