@@ -164,7 +164,9 @@ impl VM {
             }
 
             // ── arithmetic ──────────────────────────────
-            Op::Add => self.binop_arith(span, "ADD", |a, b| a + b, |a, b| a + b)?,
+            //   ADD is the only one that accepts STRINGs: same-type strings
+            //   concatenate (spec §7). SUB/MUL/DIV/MOD are numeric only.
+            Op::Add => self.binop_add(span)?,
             Op::Sub => self.binop_arith(span, "SUB", |a, b| a - b, |a, b| a - b)?,
             Op::Mul => self.binop_arith(span, "MUL", |a, b| a * b, |a, b| a * b)?,
             Op::Div => self.binop_div(span, "DIV")?,
@@ -506,6 +508,30 @@ impl VM {
         }
     }
 
+    fn binop_add(&mut self, span: Span) -> Result<(), AnalError> {
+        self.check_unclenched("ADD", span)?;
+        let b = self.pop("ADD", span)?;
+        let a = self.pop("ADD", span)?;
+        let result = match (&a, &b) {
+            (Value::Int(x), Value::Int(y)) => Value::Int(x + y),
+            (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
+            (Value::Str(x), Value::Str(y)) => {
+                let mut s = String::with_capacity(x.len() + y.len());
+                s.push_str(x);
+                s.push_str(y);
+                Value::Str(Rc::from(s.as_str()))
+            }
+            _ => {
+                return Err(AnalError::Rejection {
+                    expected: "matching numeric or STRING types",
+                    found: a.type_name().into(),
+                    span,
+                });
+            }
+        };
+        self.push(result, span)
+    }
+
     fn binop_arith(
         &mut self,
         span: Span,
@@ -710,6 +736,17 @@ EXPEL"#);
     }
 
     #[test]
+    fn add_concatenates_strings() {
+        // Spec §7: ADD on two STRINGs concatenates them.
+        let (out, _, result) = run(r#"PUSH "hello, "
+PUSH "world"
+ADD
+DISCHARGE"#);
+        result.unwrap();
+        assert_eq!(out, "hello, world\n");
+    }
+
+    #[test]
     fn arithmetic_subtract() {
         let (out, _err, result) = run(r#"PUSH 10
 PUSH 3
@@ -759,9 +796,11 @@ IF_TIGHT [ PUSH "no" DISCHARGE ]"#);
     }
 
     #[test]
-    fn pop_on_empty_is_emptiness() {
+    fn pop_on_empty_is_caught_statically() {
+        // With the type checker in front of the VM, popping an empty
+        // stack is a static MISMATCH — the program never starts.
         let (_out, _err, result) = run("POP");
-        assert!(matches!(result.unwrap_err(), AnalError::Emptiness { .. }));
+        assert!(matches!(result.unwrap_err(), AnalError::Mismatch { .. }));
     }
 
     // ── PREP / INSERT ────────────────────────────────────
@@ -996,12 +1035,11 @@ DISCHARGE"#);
     }
 
     #[test]
-    fn passage_not_found_raises_error() {
+    fn passage_not_found_caught_statically() {
+        // The checker reports unresolved passage names as MISMATCH at
+        // probe time, ahead of execution.
         let (_, _, result) = run("ENTER nonexistent");
-        assert!(matches!(
-            result.unwrap_err(),
-            AnalError::PassageNotFound { .. }
-        ));
+        assert!(matches!(result.unwrap_err(), AnalError::Mismatch { .. }));
     }
 
     #[test]

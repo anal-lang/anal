@@ -59,6 +59,9 @@ pub enum AnalError {
 
     #[error("PARSE: {message}")]
     Parse { message: String, span: Span },
+
+    #[error("MISMATCH: {message}")]
+    Mismatch { message: String, span: Span },
 }
 
 impl AnalError {
@@ -78,6 +81,7 @@ impl AnalError {
             AnalError::ForeignBody { .. } => "E010",
             AnalError::Rupture { .. } => "E011",
             AnalError::PassageNotFound { .. } => "E012",
+            AnalError::Mismatch { .. } => "E013",
             AnalError::Parse { .. } => "E000",
         }
     }
@@ -96,6 +100,7 @@ impl AnalError {
             | AnalError::ForeignBody { span, .. }
             | AnalError::Rupture { span }
             | AnalError::PassageNotFound { span, .. }
+            | AnalError::Mismatch { span, .. }
             | AnalError::Parse { span, .. } => *span,
         }
     }
@@ -155,6 +160,7 @@ impl AnalError {
             AnalError::ForeignBody { .. } => "FOREIGN_BODY",
             AnalError::Rupture { .. } => "RUPTURE",
             AnalError::PassageNotFound { .. } => "PASSAGE_NOT_FOUND",
+            AnalError::Mismatch { .. } => "MISMATCH",
             AnalError::Parse { .. } => "PARSE",
         }
     }
@@ -179,6 +185,7 @@ impl AnalError {
             AnalError::ForeignBody { token, .. } => format!("unrecognised token `{token}`"),
             AnalError::Rupture { .. } => "DILATE block was never closed".into(),
             AnalError::PassageNotFound { name, .. } => format!("no passage named `{name}`"),
+            AnalError::Mismatch { message, .. } => message.clone(),
             AnalError::Parse { message, .. } => message.clone(),
         }
     }
@@ -236,6 +243,9 @@ impl AnalError {
             AnalError::Casing { .. } => Some("ANAL is case-sensitive. Keywords are uppercase."),
             AnalError::ForeignBody { .. } => Some("ANAL does not accept what it does not know."),
             AnalError::Rupture { .. } => Some("ANAL does not leave things open."),
+            AnalError::Mismatch { .. } => {
+                Some("ANAL refuses to run what it has not first understood.")
+            }
             _ => None,
         }
     }

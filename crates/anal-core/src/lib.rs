@@ -8,14 +8,16 @@
 //!
 //! ```text
 //! source text
-//!     -> [`lexer::lex`]    -> Vec<Spanned<Token>>
-//!     -> [`parser::compile`] -> Vec<[`op::Instr`]>
+//!     -> [`lexer::lex`]   -> Vec<Spanned<Token>>
+//!     -> [`parser::compile`] -> Program (bytecode)
+//!     -> [`check::check_program`] -> static MISMATCH or pass
 //!     -> [`vm::VM::execute`] -> side effects + final stack state
 //! ```
 //!
 //! See <https://github.com/1xn/anal> for the language specification.
 
 pub mod ast;
+pub mod check;
 pub mod compiler;
 pub mod error;
 pub mod lexer;

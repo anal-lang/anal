@@ -18,19 +18,23 @@ use crate::op::{Instr, Op, Program};
 use crate::token::{Span, Spanned, Token};
 use crate::value::Value;
 
-/// Lex + parse a complete ANAL source string into a compiled [`Program`].
+/// Lex, parse, and type-check a complete ANAL source string into a
+/// compiled [`Program`] ready for the VM. Static type errors surface as
+/// [`AnalError::Mismatch`] before any code runs.
 pub fn compile(source: &str) -> Result<Program, AnalError> {
     let tokens = crate::lexer::lex(source)?;
     let mut p = Parser::new(&tokens);
     p.parse_program()?;
-    Ok(Program {
+    let program = Program {
         main: Rc::from(p.instrs.into_boxed_slice()),
         passages: p
             .passages
             .into_iter()
             .map(|(name, body)| (name, Rc::from(body.into_boxed_slice())))
             .collect(),
-    })
+    };
+    crate::check::check_program(&program)?;
+    Ok(program)
 }
 
 struct Parser<'a> {

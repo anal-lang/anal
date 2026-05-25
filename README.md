@@ -65,7 +65,7 @@ The interpreter renders mistakes in spec-voice.
 
 </details>
 
-Other errors you can earn: `REFUSAL`, `PREMATURE_RELEASE`, `PENETRATION_DEPTH`. The runtime does not apologise.
+Other errors you can earn: `REFUSAL`, `PREMATURE_RELEASE`, `PENETRATION_DEPTH`, `MISMATCH`. The runtime does not apologise; the checker does not negotiate.
 
 ---
 
@@ -129,14 +129,16 @@ anal probe examples/consent_dialog.anal
 
 What's in v0.1: stack ops (`PUSH`, `POP`, `DUP`, `SWAP`, `DEPTH`, `PROBE`), arithmetic, comparison, control flow (`IF_TIGHT`, `IF_LOOSE`, `DILATE`/`CONSTRICT`, `ABORT`), I/O (`EXPEL`, `DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `INSERT`, `EXTRACT`, `FLUSH`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, capacity management (`EXPAND` with real `OVERFLOW`), pause/resume signalling (`HOLD` / `RESUME`), and ariadne-rendered diagnostics.
 
-What is not in v0.1: a module system, a type system beyond the built-in scalars, FFI, a REPL, or any form of concurrency.
+**v0.2 in progress.** A static type checker runs between parse and execute, surfacing type errors as `MISMATCH` (E013) at probe time. Programs that would have raised `REJECTION` at runtime now fail to compile, with the same span. `ADD` on two `STRING`s now concatenates, per spec §7. PASSAGE bodies are re-checked at every call site, giving simple ad-hoc polymorphism (`PASSAGE square: DUP MUL EXIT` works on both `INT` and `FLOAT`) without generics.
+
+What is not in v0.2 yet: a module system, FFI, a REPL, or any form of concurrency.
 
 ---
 
 ## Milestones
 
 - **v0.1** ✓ shipped — reference interpreter, full spec coverage of the core ops, install pipeline.
-- **v0.2** — module system, real type errors.
+- **v0.2** — in progress. Static type checker landed (this release); module system still ahead.
 - **v1.0** — `analc`, the self-hosted compiler. ANAL compiling ANAL into `.sph` bytecode.
 - **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§9](https://1xn.github.io/anal/#suppository); neither shipped.
 
