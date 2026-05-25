@@ -51,6 +51,13 @@ pub enum Op {
     Probe,
     Dup,
     Swap,
+    /// Copy the second-from-top value to the top: `(a b -- a b a)`.
+    Over,
+    /// Rotate the third-from-top value to the top: `(a b c -- b c a)`.
+    Rot,
+    /// Drop the second-from-top value: `(a b -- b)`. Equivalent to
+    /// `SWAP POP` but read-flat as a single op.
+    Nip,
     /// Push the current stack depth as an INT.
     Depth,
     /// Remove a value from `depth` positions below the top. Requires CONSENT.
@@ -85,6 +92,51 @@ pub enum Op {
     /// Write the top of stack to the given path. Does not POP. Overwrites.
     /// Requires CONSENT if the file already exists.
     Evacuate(String),
+    /// Read one raw byte from stdin and PUSH it as an INT (0..=255), or -1
+    /// on EOF. Pairs with [`Op::EmitByte`].
+    ReceiveByte,
+    /// POP an INT in 0..=255 and write it to stdout as a single raw byte.
+    EmitByte,
+
+    // ── String inspection ─────────────────────────────
+    /// POP a STRING and PUSH its byte length as an INT.
+    Strlen,
+    /// POP an INT index and a STRING; PUSH the byte at that index as an
+    /// INT in 0..=255. Out-of-bounds raises CAVITY_BREACH.
+    Charat,
+    /// POP an INT length, INT start, and STRING; PUSH the substring of
+    /// `length` bytes starting at `start`. Out-of-bounds raises
+    /// CAVITY_BREACH.
+    Substr,
+
+    // ── External storage (CAVITY) ─────────────────────
+    /// Allocate a new CAVITY of `n` INT cells (all zero) and PUSH it.
+    /// `n` is a compile-time literal; a non-positive `n` raises HOLLOW.
+    Buffer(usize),
+    /// Allocate a new CAVITY whose size is POPped from the stack as an
+    /// INT and PUSH it. A non-positive size raises HOLLOW at runtime.
+    /// Pair-form of [`Op::Buffer`] — same op, the size came from the
+    /// stack instead of the source. Matches the [`Op::Hold`] precedent.
+    BufferDyn,
+    /// POP an INT index, read the cell of the CAVITY one position below
+    /// it, and PUSH the result. The CAVITY remains on the stack.
+    Bufget,
+    /// POP an INT value and an INT index; write the value into the cell
+    /// of the CAVITY one position below them. The CAVITY remains on the
+    /// stack. Requires PREP and CONSENT.
+    Bufset,
+    /// Read the cell count of the CAVITY at the top of the stack and
+    /// PUSH it as an INT. The CAVITY remains on the stack.
+    Buflen,
+    /// Compile-time-indexed read: peek the CAVITY on top of the stack,
+    /// read cell `i`, PUSH the INT. The CAVITY remains. Sugar for the
+    /// common case where the index is fixed by the program; for a
+    /// runtime index, use [`Op::Bufget`].
+    Load(usize),
+    /// Compile-time-indexed write: POP an INT value, peek the CAVITY
+    /// on top of the stack, write `cells[i] := value`. The CAVITY
+    /// remains. Requires PREP and CONSENT, same as [`Op::Bufset`].
+    Store(usize),
 
     // ── Flow control (jumps are resolved offsets) ─────
     Jump(usize),

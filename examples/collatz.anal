@@ -1,0 +1,86 @@
+; Collatz trajectory.
+;
+; Reads a starting integer n from stdin, repeatedly applies:
+;   n even  -> n / 2
+;   n odd   -> 3n + 1
+; until n reaches 1, records every value in a runtime-sized CAVITY,
+; then prints the trajectory.
+;
+; v0.3 acceptance test. Demonstrates runtime BUFFER, LOAD/STORE
+; with literal indices, BUFGET/BUFSET for runtime indices, PASSAGE,
+; OVER, and DILATE/CONSTRICT.
+;
+; CAVITY layout:
+;   cells[0]      next write index into the trajectory
+;   cells[1]      current n
+;   cells[2..]    trajectory values
+
+PASSAGE step:
+  DUP PUSH 2 MOD PUSH 0 EQ           ; [n, is_even]
+  DUP                                ; [n, is_even, is_even]
+  IF_TIGHT [ SWAP PUSH 2 DIV SWAP ]  ; if even: n := n/2, keep is_even
+  NOT                                ; [value, was_odd]
+  IF_TIGHT [ PUSH 3 MUL PUSH 1 ADD ] ; if was_odd: n := 3n+1
+EXIT
+
+PUSH "Starting n: " DISCHARGE
+RECEIVE TO_INT                  ; [n]
+
+DUP PUSH 100 MUL PUSH 2 ADD     ; [n, n*100+2]
+BUFFER                          ; [n, CAVITY]
+SWAP                            ; [CAVITY, n]
+
+; initialise cavity[1] := n, cavity[0] := 2
+PREP CONSENT STORE 1            ; [CAVITY]
+PUSH 2 PREP CONSENT STORE 0     ; [CAVITY]
+
+; main loop: while cavity[1] != 1
+LOAD 1 PUSH 1 EQ NOT
+DILATE
+  ; cavity[ cavity[0] ] := cavity[1]
+  LOAD 0                    ; [CAVITY, idx]
+  OVER LOAD 1 NIP               ; [CAVITY, idx, n]
+  PREP CONSENT BUFSET           ; [CAVITY]
+
+  ; cavity[0] := cavity[0] + 1
+  LOAD 0 PUSH 1 ADD         ; [CAVITY, idx+1]
+  PREP CONSENT STORE 0          ; [CAVITY]
+
+  ; cavity[1] := step(cavity[1])
+  LOAD 1 ENTER step         ; [CAVITY, n']
+  PREP CONSENT STORE 1          ; [CAVITY]
+
+  ; next predicate
+  LOAD 1 PUSH 1 EQ NOT
+CONSTRICT
+
+; record the terminating 1
+LOAD 0                      ; [CAVITY, idx]
+PUSH 1                          ; [CAVITY, idx, 1]
+PREP CONSENT BUFSET             ; [CAVITY]
+
+; bump idx so cavity[0] is the *end* index
+LOAD 0 PUSH 1 ADD
+PREP CONSENT STORE 0            ; [CAVITY]
+
+; print trajectory: cavity[2..cavity[0]]
+; Use a fresh counter living in cavity[1] (we no longer need the current-n).
+PUSH 2 PREP CONSENT STORE 1     ; cavity[1] := 2 (read cursor)
+
+; loop: while cavity[1] < cavity[0]
+LOAD 1 OVER LOAD 0 NIP LT
+DILATE
+  ; print cavity[ cavity[1] ]
+  LOAD 1                    ; [CAVITY, i]
+  BUFGET                        ; [CAVITY, value]
+  DISCHARGE                     ; [CAVITY]
+
+  ; cavity[1] := cavity[1] + 1
+  LOAD 1 PUSH 1 ADD
+  PREP CONSENT STORE 1          ; [CAVITY]
+
+  ; next predicate
+  LOAD 1 OVER LOAD 0 NIP LT
+CONSTRICT
+
+POP                             ; release the CAVITY

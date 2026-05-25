@@ -331,6 +331,9 @@ impl<'a> Parser<'a> {
             Token::Probe => self.emit(Op::Probe, span),
             Token::Dup => self.emit(Op::Dup, span),
             Token::Swap => self.emit(Op::Swap, span),
+            Token::Over => self.emit(Op::Over, span),
+            Token::Rot => self.emit(Op::Rot, span),
+            Token::Nip => self.emit(Op::Nip, span),
             Token::Depth => self.emit(Op::Depth, span),
 
             // ── I/O ────────────────────────────────────
@@ -511,6 +514,52 @@ impl<'a> Parser<'a> {
             // ── RECEIVE — read one line from stdin ─────
             Token::Receive => self.emit(Op::Receive, span),
 
+            // ── Byte I/O ───────────────────────────────
+            Token::ReceiveByte => self.emit(Op::ReceiveByte, span),
+            Token::EmitByte => self.emit(Op::EmitByte, span),
+
+            // ── String inspection ──────────────────────
+            Token::Strlen => self.emit(Op::Strlen, span),
+            Token::Charat => self.emit(Op::Charat, span),
+            Token::Substr => self.emit(Op::Substr, span),
+
+            // ── External storage (CAVITY) ──────────────
+            //
+            // Two forms, matching the HOLD precedent:
+            //   `BUFFER <n>`  — n is a compile-time INT literal; HOLLOW
+            //                   for non-positive n is caught at parse.
+            //   bare `BUFFER` — pop an INT from the stack at runtime
+            //                   and use it as the size; HOLLOW raised
+            //                   at runtime if the popped value is ≤ 0.
+            Token::Buffer => match self.peek_kind() {
+                Some(Token::Int(_)) => {
+                    let n = self.parse_uint_operand("BUFFER size", span)?;
+                    if n == 0 {
+                        return Err(AnalError::Hollow { size: 0, span });
+                    }
+                    self.emit(Op::Buffer(n), span);
+                }
+                _ => self.emit(Op::BufferDyn, span),
+            },
+            Token::Bufget => self.emit(Op::Bufget, span),
+            Token::Bufset => self.emit(Op::Bufset, span),
+            Token::Buflen => self.emit(Op::Buflen, span),
+
+            // ── LOAD <i> / STORE <i> ──────────────────
+            //
+            // Compile-time-indexed sugar for the cavity-as-locals
+            // pattern. Same semantics as BUFGET/BUFSET with the
+            // index inlined into the op — the runtime ceremony is
+            // unchanged (STORE still requires PREP + CONSENT).
+            Token::Load => {
+                let i = self.parse_uint_operand("LOAD index", span)?;
+                self.emit(Op::Load(i), span);
+            }
+            Token::Store => {
+                let i = self.parse_uint_operand("STORE index", span)?;
+                self.emit(Op::Store(i), span);
+            }
+
             // ── Header-only keywords appearing mid-program ──
             Token::Anal | Token::Version => {
                 return Err(AnalError::Parse {
@@ -641,6 +690,9 @@ fn is_known_keyword(uppercased: &str) -> bool {
             | "EXTRACT"
             | "SWAP"
             | "DUP"
+            | "OVER"
+            | "ROT"
+            | "NIP"
             | "DEPTH"
             | "FLUSH"
             | "PREP"
@@ -679,6 +731,17 @@ fn is_known_keyword(uppercased: &str) -> bool {
             | "TO_STRING"
             | "TRUE"
             | "FALSE"
+            | "RECEIVE_BYTE"
+            | "EMIT_BYTE"
+            | "STRLEN"
+            | "CHARAT"
+            | "SUBSTR"
+            | "BUFFER"
+            | "BUFGET"
+            | "BUFSET"
+            | "BUFLEN"
+            | "LOAD"
+            | "STORE"
     )
 }
 

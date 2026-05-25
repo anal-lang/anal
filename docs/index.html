@@ -534,6 +534,8 @@ footer {
     <a class="nav-link" href="#io">Input / Output</a>
     <a class="nav-link" href="#flow">Flow Control</a>
     <a class="nav-link" href="#types">Type System</a>
+    <a class="nav-link" href="#strings">String Inspection</a>
+    <a class="nav-link" href="#storage">External Storage <span class="nav-badge nb-blue">v0.3</span></a>
     <a class="nav-link" href="#errors">Error Reference</a>
   </div>
 
@@ -698,6 +700,27 @@ footer {
         <td class="cmd-desc">Duplicate the top value and push the copy.</td>
       </tr>
       <tr>
+        <td><span class="cmd-kw">OVER</span></td>
+        <td></td>
+        <td class="cmd-desc">Copy the second-from-top value to the top: <code>(a b -- a b a)</code>.
+          <div class="cmd-note">The principal way to keep two values alive at once. Pairs with <code>DUP</code> and <code>SWAP</code> as the minimum useful stack vocabulary.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">ROT</span></td>
+        <td></td>
+        <td class="cmd-desc">Rotate the third-from-top value to the top: <code>(a b c -- b c a)</code>.
+          <div class="cmd-note">Three applications of <code>ROT</code> return the stack to its original order. Use when a buried value must be brought forward without losing the values above it.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">NIP</span></td>
+        <td></td>
+        <td class="cmd-desc">Drop the second-from-top value: <code>(a b -- b)</code>. Equivalent to <code>SWAP POP</code> but read-flat as a single op.
+          <div class="cmd-note">Common after <code>OVER LOAD &lt;i&gt;</code>: the duplicated handle is no longer needed once the value has been read.</div>
+        </td>
+      </tr>
+      <tr>
         <td><span class="cmd-kw">DEPTH</span></td>
         <td></td>
         <td class="cmd-desc">Push the current stack depth as an INT. Useful before INSERT or EXTRACT.</td>
@@ -834,6 +857,18 @@ footer {
           <div class="cmd-note">Requires CONSENT if the file already exists. ANAL does not overwrite without permission.</div>
         </td>
       </tr>
+      <tr>
+        <td><span class="cmd-kw">RECEIVE_BYTE</span></td>
+        <td class="cmd-desc">Read one raw byte from stdin and PUSH it as an INT in the range 0–255. PUSHes <code>-1</code> on end-of-input.
+          <div class="cmd-note">Use when reading binary or single-character streams. <code>RECEIVE</code> is for prompts; <code>RECEIVE_BYTE</code> is for filters.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">EMIT_BYTE</span></td>
+        <td class="cmd-desc">POP the top INT and write it to stdout as a single raw byte. Value must be in 0–255 or REJECTION is raised.
+          <div class="cmd-note">Pairs with <code>RECEIVE_BYTE</code>. ANAL does not interpret. ANAL emits.</div>
+        </td>
+      </tr>
     </tbody>
   </table>
 </div>
@@ -961,6 +996,11 @@ footer {
         <td class="cmd-arg">[ ... ]</td>
         <td class="cmd-desc">A quoted block of code. Square brackets push the enclosed instructions as a single value; the block does not execute until consumed by <code>ENTER</code>, <code>IF_TIGHT</code>, or <code>IF_LOOSE</code>. ANAL's approach to first-class functions.</td>
       </tr>
+      <tr>
+        <td><span class="cmd-kw">CAVITY</span></td>
+        <td class="cmd-arg"><em>opaque</em></td>
+        <td class="cmd-desc">A fixed-size mutable region of INTs, allocated by <code>BUFFER</code>. CAVITY values are first-class — they may be PUSHed, DUPed, passed to a PASSAGE, or stored as a PASSAGE result. They have no literal form; a CAVITY only exists once <code>BUFFER</code> has allocated it. See <a href="#storage">§9 External Storage</a>.</td>
+      </tr>
     </tbody>
   </table>
 
@@ -1063,10 +1103,161 @@ footer {
   </table>
 </div>
 
-<!-- §8 Errors -->
-<div class="section" id="errors">
+<!-- §8 String Inspection -->
+<div class="section" id="strings">
   <div class="section-header">
     <span class="section-num">08</span>
+    <span class="section-title">String Inspection</span>
+  </div>
+
+  <p>STRING values in ANAL are immutable. They cannot be modified in place. They can, however, be inspected: their length, their bytes, and their substrings are all retrievable. Inspection is non-destructive and requires no ceremony.</p>
+
+  <div class="callout blue" style="margin: 1.5rem 0;">
+    <div class="callout-label">Note</div>
+    Indices are zero-based and count bytes, not codepoints. ANAL strings are UTF-8; a STRING containing multi-byte characters reports its byte length, not its glyph count. ANAL counts what it can prove.
+  </div>
+
+  <table class="cmd-table">
+    <thead>
+      <tr>
+        <th style="width:160px">Command</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cmd-kw">STRLEN</span></td>
+        <td class="cmd-desc">POP a STRING, PUSH its length in bytes as an INT.
+          <div class="cmd-note">Non-destructive in the consent sense; the STRING itself is consumed by the POP, as with any other op. <code>DUP</code> first to keep it.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">CHARAT</span></td>
+        <td class="cmd-desc">POP an INT index and a STRING, PUSH the byte at that index as an INT in 0–255. Out-of-bounds raises CAVITY_BREACH.
+          <div class="cmd-note">Stack order: STRING below, index on top. <code>"hello" 0 CHARAT</code> pushes <code>104</code>.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">SUBSTR</span></td>
+        <td class="cmd-desc">POP an INT length, an INT start, and a STRING; PUSH the substring of <code>length</code> bytes beginning at <code>start</code>.
+          <div class="cmd-note">Stack order from bottom to top: STRING, start, length. Out-of-bounds at either end raises CAVITY_BREACH. A length of <code>0</code> PUSHes the empty STRING; ANAL accepts emptiness when it was asked for.</div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- §9 External Storage -->
+<div class="section" id="storage">
+  <div class="section-header">
+    <span class="section-num">09</span>
+    <span class="section-title">External Storage</span>
+  </div>
+
+  <p>The stack is ANAL's primary memory. For programs that require random access to indexed data — interpreters, parsers, simulations — ANAL provides the <code>CAVITY</code>: a fixed-size, mutable, INT-valued region allocated by <code>BUFFER</code>. CAVITY semantics extend ANAL's existing consent discipline to a new region. Reads are free; writes are ceremonial.</p>
+
+  <div class="callout red">
+    <div class="callout-label">Strict</div>
+    A CAVITY is fixed in size at allocation and cannot grow. Writing past its end raises CAVITY_BREACH. ANAL does not stretch what it has already shaped.
+  </div>
+
+  <h2>Allocation and Access</h2>
+
+  <table class="cmd-table">
+    <thead>
+      <tr>
+        <th style="width:160px">Command</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cmd-kw">BUFFER</span> <span class="cmd-arg">&lt;n&gt;</span></td>
+        <td class="cmd-desc">Allocate a new CAVITY of <code>n</code> INT cells, all initialised to <code>0</code>, and PUSH it. <code>n</code> is a compile-time literal INT &gt; 0. A non-positive literal raises HOLLOW at compile time.
+          <div class="cmd-note">Allocation itself is non-destructive — nothing is overwritten. A CAVITY freshly returned by <code>BUFFER</code> is hollow but not uninitialised.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">BUFFER</span></td>
+        <td class="cmd-desc">Bare form: POP an INT from the stack and use it as the cell count, otherwise behaving exactly as <code>BUFFER &lt;n&gt;</code>. A non-positive popped value raises HOLLOW at runtime.
+          <div class="cmd-note">Same op, two adicities — matches the <code>HOLD</code> precedent. Use the literal form when the size is fixed by the program, the bare form when it came from input. ANAL accepts what it was given, including how it was given.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">BUFGET</span></td>
+        <td class="cmd-desc">POP an INT index, read the cell at that index in the CAVITY one position below it, and PUSH the result. The CAVITY remains on the stack — only the index is consumed. Out-of-bounds raises CAVITY_BREACH.
+          <div class="cmd-note">Stack order: CAVITY below, index on top. After the op: CAVITY stays, the read value sits above it.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">BUFSET</span></td>
+        <td class="cmd-desc">POP an INT value and an INT index, write the value at the indexed cell of the CAVITY one position below. The CAVITY remains on the stack — only the index and value are consumed. <span class="req req-must">needs PREP and CONSENT</span>
+          <div class="cmd-note">Stack order from bottom to top: CAVITY, index, value. The same ceremony as <code>INSERT</code>: <code>PREP</code> arms the write; <code>CONSENT</code> permits it. Forgetting either raises TIGHTNESS or REFUSAL, respectively.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">BUFLEN</span></td>
+        <td class="cmd-desc">Read the cell count of the CAVITY at the top of the stack and PUSH it as an INT. The CAVITY remains on the stack.
+          <div class="cmd-note">Inspection, not consumption. The CAVITY is a persistent region; reading its size does not disturb it.</div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Compile-time-indexed access</h2>
+
+  <p>For the common case where a CAVITY is used as a fixed set of named cells (a "locals frame," in the established idiom), the index is known at the source. <code>LOAD</code> and <code>STORE</code> take the index as a literal, freeing the stack from the bookkeeping that <code>BUFGET</code> and <code>BUFSET</code> require.</p>
+
+  <table class="cmd-table">
+    <thead>
+      <tr>
+        <th style="width:160px">Command</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cmd-kw">LOAD</span> <span class="cmd-arg">&lt;i&gt;</span></td>
+        <td class="cmd-desc">Read cell <code>i</code> of the CAVITY at the top of the stack and PUSH the result as an INT. The CAVITY remains. Out-of-bounds raises CAVITY_BREACH at runtime.
+          <div class="cmd-note"><code>i</code> is a non-negative compile-time literal. For a runtime-computed index, use <code>BUFGET</code>.</div>
+        </td>
+      </tr>
+      <tr>
+        <td><span class="cmd-kw">STORE</span> <span class="cmd-arg">&lt;i&gt;</span></td>
+        <td class="cmd-desc">POP an INT value and write it to cell <code>i</code> of the CAVITY now on top of the stack. The CAVITY remains. <span class="req req-must">needs PREP and CONSENT</span>
+          <div class="cmd-note">Same ceremony as <code>BUFSET</code>: forgetting either latch raises TIGHTNESS or REFUSAL. <code>i</code> is a non-negative compile-time literal. For a runtime-computed index, use <code>BUFSET</code>.</div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Persistence and Consumption</h2>
+
+  <p>A CAVITY is a persistent region. The ops that act on it (<code>BUFGET</code>, <code>BUFSET</code>, <code>BUFLEN</code>, <code>LOAD</code>, <code>STORE</code>) do not consume the CAVITY itself; they consume only the indices and values they were given. This is the same pattern that governs every other persistent destination in ANAL: <code>EXPEL</code> does not consume stdout, <code>EVACUATE</code> does not consume the file, <code>INSERT</code> does not consume the stack. Acts performed on an enduring thing do not destroy the thing.</p>
+
+  <p>Discarding a CAVITY is an explicit act. When you are finished with one, <code>POP</code> it. ANAL does not garbage-collect attention.</p>
+
+  <h2>Consent Semantics</h2>
+
+  <p>A <code>BUFSET</code> or <code>STORE</code> consumes one PREP and one CONSENT, exactly as a stack <code>INSERT</code> would. A program that performs many writes in succession must arm the ceremony for each one. This is not an oversight. ANAL considers a sequence of unwitnessed writes the precise condition the consent state machine was designed to prevent. <code>LOAD</code>, <code>BUFGET</code>, and <code>BUFLEN</code> require no ceremony: reading is not violation.</p>
+
+  <p>The write ceremony is local to the CAVITY: a CONSENT armed before a stack INSERT does not authorise a subsequent BUFSET or STORE, and vice versa. Each region demands its own.</p>
+
+  <div class="callout blue" style="margin: 1.5rem 0;">
+    <div class="callout-label">On verbosity</div>
+    The ceremony of <code>PREP CONSENT STORE &lt;i&gt;</code> is intentional. Programs that perform many writes are expected to wrap the operation in a <code>PASSAGE</code> — the ceremony lives in the definition; the call sites read clean. ANAL externalises ceremony to where it belongs; it does not eliminate it. A language that makes destruction cheap is the precise thing ANAL was written against.
+  </div>
+
+  <div class="callout blue" style="margin: 1.5rem 0;">
+    <div class="callout-label">Note</div>
+    A CAVITY participates in the type checker. <code>BUFGET</code> on a STRING raises MISMATCH at probe time. A PASSAGE that returns a CAVITY declares it the same way it declares any other return: by leaving it on the stack at <code>EXIT</code>.
+  </div>
+</div>
+
+<!-- §10 Errors -->
+<div class="section" id="errors">
+  <div class="section-header">
+    <span class="section-num">10</span>
     <span class="section-title">Error Reference</span>
   </div>
 
@@ -1138,13 +1329,23 @@ footer {
       <div class="err-code">E013</div>
       <div class="err-desc">Static type or stack-shape disagreement, caught at probe time. ANAL refuses to run what it has not first understood.</div>
     </div>
+    <div class="err-card">
+      <div class="err-name">CAVITY_BREACH</div>
+      <div class="err-code">E014</div>
+      <div class="err-desc">Index out of range on a CAVITY, STRING, or SUBSTR span. ANAL does not reach past what was allocated.</div>
+    </div>
+    <div class="err-card">
+      <div class="err-name">HOLLOW</div>
+      <div class="err-code">E015</div>
+      <div class="err-desc"><code>BUFFER</code> requested a non-positive size. A CAVITY of zero cells cannot be entered.</div>
+    </div>
   </div>
 </div>
 
-<!-- §9 suppository -->
+<!-- §11 suppository -->
 <div class="section" id="suppository">
   <div class="section-header">
-    <span class="section-num">09</span>
+    <span class="section-num">11</span>
     <span class="section-title">suppository</span>
   </div>
 
@@ -1283,10 +1484,10 @@ footer {
   </table>
 </div>
 
-<!-- §10 Contributing -->
+<!-- §12 Contributing -->
 <div class="section" id="contributing">
   <div class="section-header">
-    <span class="section-num">10</span>
+    <span class="section-num">12</span>
     <span class="section-title">Contributing Policy</span>
   </div>
 
@@ -1327,10 +1528,10 @@ footer {
   <p>The RFC PASSAGE process typically takes <strong>6–18 months</strong>. ANAL does not rush. Haste causes TIGHTNESS errors.</p>
 </div>
 
-<!-- §11 Examples -->
+<!-- §13 Examples -->
 <div class="section" id="examples">
   <div class="section-header">
-    <span class="section-num">11</span>
+    <span class="section-num">13</span>
     <span class="section-title">Extended Examples</span>
   </div>
 
@@ -1380,12 +1581,38 @@ footer {
 <span class="kw">INSERT</span> <span class="num">2</span> <span class="num">15</span>
 <span class="cmt">; Stack: [10, 15, 20, 30] ← top</span>
 <span class="cmt">; Smooth entry. PREP made the difference.</span></pre>
+
+  <h2>CAVITY use (v0.3)</h2>
+<pre><span class="cmt">; Allocate a 4-cell CAVITY, write 42 at index 2, then read it back.</span>
+<span class="cmt">; LOAD and STORE take the index as a compile-time literal — the</span>
+<span class="cmt">; CAVITY stays on the stack across each op.</span>
+
+<span class="kw">BUFFER</span> <span class="num">4</span>             <span class="cmt">; [CAVITY] — all cells zero</span>
+
+<span class="kw">PUSH</span> <span class="num">42</span>
+<span class="kw">PREP</span> <span class="kw">CONSENT</span>
+<span class="kw">STORE</span> <span class="num">2</span>             <span class="cmt">; cavity[2] := 42 ; [CAVITY]</span>
+
+<span class="kw">LOAD</span> <span class="num">2</span>              <span class="cmt">; [CAVITY, 42]</span>
+<span class="kw">DISCHARGE</span>            <span class="cmt">; Output: 42  ; [CAVITY]</span>
+
+<span class="kw">POP</span>                  <span class="cmt">; release the CAVITY when done</span></pre>
+
+<pre><span class="cmt">; The same write expressed with the runtime-indexed forms. Use these</span>
+<span class="cmt">; when the index is computed at runtime.</span>
+
+<span class="kw">BUFFER</span> <span class="num">4</span>
+<span class="kw">PUSH</span> <span class="num">2</span> <span class="kw">PUSH</span> <span class="num">42</span>      <span class="cmt">; [CAVITY, idx, value]</span>
+<span class="kw">PREP</span> <span class="kw">CONSENT</span> <span class="kw">BUFSET</span> <span class="cmt">; [CAVITY]</span>
+
+<span class="kw">PUSH</span> <span class="num">2</span> <span class="kw">BUFGET</span>       <span class="cmt">; [CAVITY, 42]</span>
+<span class="kw">DISCHARGE</span> <span class="kw">POP</span></pre>
 </div>
 
-<!-- §12 FAQ -->
+<!-- §14 FAQ -->
 <div class="section" id="faq">
   <div class="section-header">
-    <span class="section-num">12</span>
+    <span class="section-num">14</span>
     <span class="section-title">FAQ</span>
   </div>
 

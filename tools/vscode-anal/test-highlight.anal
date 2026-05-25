@@ -1,0 +1,67 @@
+; Smoke-test for the VS Code grammar.
+; Every distinct scope should render in a different colour under
+; most themes. Compare against the README's scope table.
+
+ANAL "smoke" VERSION 1
+
+; ── header keywords ──
+INGEST "stdlib/math"
+
+; ── PASSAGE declaration with named function ──
+PASSAGE square:
+  DUP MUL
+EXIT
+
+; ── stack ops ──
+PUSH 42 PUSH 3.14 PUSH "hello\n"
+DUP SWAP OVER ROT NIP DEPTH POP
+
+; ── consent ceremony (should stand out in colour) ──
+PREP CONSENT
+INSERT 0 99
+RELAX CLENCH RELEASE
+
+; ── control flow ──
+PUSH 5
+DILATE
+  DUP DISCHARGE
+  PUSH 1 SUB
+  DUP PUSH 0 GT
+CONSTRICT
+
+; ── conditionals with inline BLOC ──
+PUSH 1
+IF_TIGHT [ PUSH "ran" DISCHARGE ]
+IF_LOOSE [ PUSH "didn't" DISCHARGE ]
+
+; ── arithmetic + comparison ──
+PUSH 10 PUSH 3 ADD SUB MUL DIV MOD
+PUSH 1 PUSH 2 EQ LT GT LTE GTE NOT
+
+; ── conversion ──
+PUSH 42 TO_STRING TO_INT TO_FLOAT
+
+; ── I/O ──
+RECEIVE EXPEL DISCHARGE EVACUATE "out.txt"
+PUSH 65 EMIT_BYTE
+RECEIVE_BYTE
+
+; ── storage (CAVITY) ──
+BUFFER 10
+LOAD 0
+PUSH 99 PREP CONSENT STORE 1
+PUSH 2 BUFGET
+PUSH 0 PUSH 1 PREP CONSENT BUFSET
+BUFLEN
+
+; ── string inspection ──
+PUSH "hello" STRLEN
+PUSH "world" PUSH 0 CHARAT
+PUSH "abcdef" PUSH 1 PUSH 3 SUBSTR
+
+; ── passage call ──
+PUSH 5 ENTER square
+
+; ── booleans + abort ──
+PUSH TRUE PUSH FALSE
+ABORT

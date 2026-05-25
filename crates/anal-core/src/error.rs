@@ -13,8 +13,8 @@ use crate::token::Span;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AnalError {
-    #[error("TIGHTNESS: INSERT attempted without prior PREP")]
-    Tightness { span: Span },
+    #[error("TIGHTNESS: {op} attempted without prior PREP")]
+    Tightness { op: &'static str, span: Span },
 
     #[error("EMPTINESS: {op} on an empty stack")]
     Emptiness { op: &'static str, span: Span },
@@ -62,6 +62,17 @@ pub enum AnalError {
 
     #[error("MISMATCH: {message}")]
     Mismatch { message: String, span: Span },
+
+    #[error("CAVITY_BREACH: index {index} out of range (len {len})")]
+    CavityBreach {
+        index: i64,
+        len: usize,
+        kind: &'static str, // "CAVITY" or "STRING"
+        span: Span,
+    },
+
+    #[error("HOLLOW: BUFFER requested a non-positive size ({size})")]
+    Hollow { size: i64, span: Span },
 }
 
 impl AnalError {
@@ -82,13 +93,15 @@ impl AnalError {
             AnalError::Rupture { .. } => "E011",
             AnalError::PassageNotFound { .. } => "E012",
             AnalError::Mismatch { .. } => "E013",
+            AnalError::CavityBreach { .. } => "E014",
+            AnalError::Hollow { .. } => "E015",
             AnalError::Parse { .. } => "E000",
         }
     }
 
     pub fn span(&self) -> Span {
         match self {
-            AnalError::Tightness { span }
+            AnalError::Tightness { span, .. }
             | AnalError::Emptiness { span, .. }
             | AnalError::Overflow { span }
             | AnalError::Refusal { span, .. }
@@ -101,6 +114,8 @@ impl AnalError {
             | AnalError::Rupture { span }
             | AnalError::PassageNotFound { span, .. }
             | AnalError::Mismatch { span, .. }
+            | AnalError::CavityBreach { span, .. }
+            | AnalError::Hollow { span, .. }
             | AnalError::Parse { span, .. } => *span,
         }
     }
@@ -161,13 +176,15 @@ impl AnalError {
             AnalError::Rupture { .. } => "RUPTURE",
             AnalError::PassageNotFound { .. } => "PASSAGE_NOT_FOUND",
             AnalError::Mismatch { .. } => "MISMATCH",
+            AnalError::CavityBreach { .. } => "CAVITY_BREACH",
+            AnalError::Hollow { .. } => "HOLLOW",
             AnalError::Parse { .. } => "PARSE",
         }
     }
 
     fn label_message(&self) -> String {
         match self {
-            AnalError::Tightness { .. } => "INSERT attempted without prior PREP".into(),
+            AnalError::Tightness { op, .. } => format!("{op} attempted without prior PREP"),
             AnalError::Emptiness { op, .. } => format!("{op} on an empty stack"),
             AnalError::Overflow { .. } => "stack capacity exceeded".into(),
             AnalError::Refusal { op, .. } => format!("{op} requires CONSENT"),
@@ -186,6 +203,14 @@ impl AnalError {
             AnalError::Rupture { .. } => "DILATE block was never closed".into(),
             AnalError::PassageNotFound { name, .. } => format!("no passage named `{name}`"),
             AnalError::Mismatch { message, .. } => message.clone(),
+            AnalError::CavityBreach {
+                index, len, kind, ..
+            } => {
+                format!("{kind} index {index} is out of range (len {len})")
+            }
+            AnalError::Hollow { size, .. } => {
+                format!("BUFFER size must be positive (got {size})")
+            }
             AnalError::Parse { message, .. } => message.clone(),
         }
     }
@@ -245,6 +270,12 @@ impl AnalError {
             AnalError::Rupture { .. } => Some("ANAL does not leave things open."),
             AnalError::Mismatch { .. } => {
                 Some("ANAL refuses to run what it has not first understood.")
+            }
+            AnalError::CavityBreach { .. } => {
+                Some("ANAL does not reach past what was allocated.")
+            }
+            AnalError::Hollow { .. } => {
+                Some("a CAVITY of zero cells cannot be entered.")
             }
             _ => None,
         }

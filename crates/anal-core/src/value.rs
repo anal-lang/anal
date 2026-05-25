@@ -1,13 +1,22 @@
-//! Runtime values: INT, FLOAT, STRING, BOOL, BLOC.
+//! Runtime values: INT, FLOAT, STRING, BOOL, BLOC, CAVITY.
 //!
 //! Strings and blocs are reference-counted so that `DUP` and stack copies
-//! are cheap. ANAL is strongly typed; conversions are explicit (`TO_INT`,
+//! are cheap. CAVITIES are reference-counted with interior mutability:
+//! `DUP`ing a CAVITY yields two stack slots that view the same underlying
+//! region, so a `BUFSET` through one is visible through the other. This
+//! is the persistent-region semantic — the CAVITY is one thing, not a
+//! snapshot.
+//!
+//! ANAL is strongly typed; conversions are explicit (`TO_INT`,
 //! `TO_FLOAT`, `TO_STRING`). The VM never coerces implicitly.
 
+use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
 use crate::op::Instr;
+
+pub type CavityCells = Rc<RefCell<Vec<i64>>>;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -16,6 +25,7 @@ pub enum Value {
     Str(Rc<str>),
     Bool(bool),
     Bloc(Rc<[Instr]>),
+    Cavity(CavityCells),
 }
 
 impl Value {
@@ -27,6 +37,7 @@ impl Value {
             Value::Str(_) => "STRING",
             Value::Bool(_) => "BOOL",
             Value::Bloc(_) => "BLOC",
+            Value::Cavity(_) => "CAVITY",
         }
     }
 
@@ -38,6 +49,7 @@ impl Value {
             Value::Str(s) => !s.is_empty(),
             Value::Bool(b) => *b,
             Value::Bloc(_) => true,
+            Value::Cavity(_) => true,
         }
     }
 }
@@ -50,6 +62,9 @@ impl PartialEq for Value {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Bloc(a), Value::Bloc(b)) => Rc::ptr_eq(a, b),
+            // CAVITY identity is by region, not by contents — two CAVITIES
+            // are equal iff they alias the same underlying storage.
+            (Value::Cavity(a), Value::Cavity(b)) => Rc::ptr_eq(a, b),
             // Different variants never compare equal — strong typing.
             _ => false,
         }
@@ -68,6 +83,7 @@ impl fmt::Display for Value {
             Value::Bool(true) => write!(f, "TRUE"),
             Value::Bool(false) => write!(f, "FALSE"),
             Value::Bloc(_) => write!(f, "[bloc]"),
+            Value::Cavity(c) => write!(f, "[cavity:{}]", c.borrow().len()),
         }
     }
 }

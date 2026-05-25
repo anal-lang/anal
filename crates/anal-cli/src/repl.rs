@@ -470,6 +470,7 @@ fn ty_name(t: &Ty) -> &'static str {
         Ty::Str => "STRING",
         Ty::Bool => "BOOL",
         Ty::Bloc => "BLOC",
+        Ty::Cavity => "CAVITY",
         Ty::Top => "<any>",
     }
 }

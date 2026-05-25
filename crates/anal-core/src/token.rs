@@ -82,6 +82,12 @@ pub enum Token {
     Swap,
     #[token("DUP")]
     Dup,
+    #[token("OVER")]
+    Over,
+    #[token("ROT")]
+    Rot,
+    #[token("NIP")]
+    Nip,
     #[token("DEPTH")]
     Depth,
     #[token("FLUSH")]
@@ -114,6 +120,32 @@ pub enum Token {
     Discharge,
     #[token("EVACUATE")]
     Evacuate,
+    #[token("RECEIVE_BYTE")]
+    ReceiveByte,
+    #[token("EMIT_BYTE")]
+    EmitByte,
+
+    // ── String inspection ─────────────────────────────
+    #[token("STRLEN")]
+    Strlen,
+    #[token("CHARAT")]
+    Charat,
+    #[token("SUBSTR")]
+    Substr,
+
+    // ── External storage (CAVITY) ─────────────────────
+    #[token("BUFFER")]
+    Buffer,
+    #[token("BUFGET")]
+    Bufget,
+    #[token("BUFSET")]
+    Bufset,
+    #[token("BUFLEN")]
+    Buflen,
+    #[token("LOAD")]
+    Load,
+    #[token("STORE")]
+    Store,
 
     // ── Flow ──────────────────────────────────────────
     #[token("DILATE")]

@@ -137,18 +137,23 @@ The REPL persists the stack, the latches, and any `PASSAGE` defined during the s
 
 What's in v0.1: stack ops (`PUSH`, `POP`, `DUP`, `SWAP`, `DEPTH`, `PROBE`), arithmetic, comparison, control flow (`IF_TIGHT`, `IF_LOOSE`, `DILATE`/`CONSTRICT`, `ABORT`), I/O (`EXPEL`, `DISCHARGE`, `RECEIVE`, `INGEST`, `EVACUATE`), the consent state machine (`PREP`, `CONSENT`, `RELAX`, `INSERT`, `EXTRACT`, `FLUSH`, `CLENCH`/`RELEASE`), subroutines (`PASSAGE`/`ENTER`/`EXIT`), `BLOC` as a first-class value, capacity management (`EXPAND` with real `OVERFLOW`), pause/resume signalling (`HOLD` / `RESUME`), and ariadne-rendered diagnostics.
 
-**v0.2 in progress.** A static type checker runs between parse and execute, surfacing type errors as `MISMATCH` (E013) at probe time. Programs that would have raised `REJECTION` at runtime now fail to compile, with the same span. `ADD` on two `STRING`s now concatenates, per spec §7. PASSAGE bodies are re-checked at every call site, giving simple ad-hoc polymorphism (`PASSAGE square: DUP MUL EXIT` works on both `INT` and `FLOAT`) without generics. An interactive REPL (`anal` with no arguments) holds the stack, latches, and passage table across lines, with the type checker running per fragment.
+**v0.2 has shipped.** A static type checker runs between parse and execute, surfacing type errors as `MISMATCH` (E013) at probe time. Programs that would have raised `REJECTION` at runtime now fail to compile, with the same span. `ADD` on two `STRING`s now concatenates, per spec §7. PASSAGE bodies are re-checked at every call site, giving simple ad-hoc polymorphism (`PASSAGE square: DUP MUL EXIT` works on both `INT` and `FLOAT`) without generics. An interactive REPL (`anal` with no arguments) holds the stack, latches, and passage table across lines, with the type checker running per fragment.
 
-What is not in v0.2 yet: a module system, FFI, or any form of concurrency.
+**v0.3 has shipped.** A new persistent-region type — `CAVITY` — joins INT/FLOAT/STRING/BOOL/BLOC, allocated by `BUFFER` and accessed by `BUFGET`/`BUFSET` (runtime indices) or `LOAD`/`STORE` (compile-time indices). `BUFFER` has two forms: literal `BUFFER <n>` and bare `BUFFER` (size from the stack), making the language formally Turing-complete — see [`examples/collatz.anal`](examples/collatz.anal) for a working trajectory program that records its output into a runtime-sized CAVITY. String inspection lands as `STRLEN` / `CHARAT` / `SUBSTR`. Byte I/O lands as `RECEIVE_BYTE` / `EMIT_BYTE`. Two new error codes — `CAVITY_BREACH` (E014) and `HOLLOW` (E015). Three new stack ops fill out the Forth-minimum vocabulary: `OVER`, `ROT`, `NIP`. A [VS Code extension](tools/vscode-anal/) provides syntax highlighting.
+
+What is not in v0.3 yet: a module system, FFI, or any form of concurrency. ANAL still has no concept of nothing.
 
 ---
 
 ## Milestones
 
 - **v0.1** ✓ shipped — reference interpreter, full spec coverage of the core ops, install pipeline.
-- **v0.2** — in progress. Static type checker and interactive REPL landed (this release); module system still ahead.
+- **v0.2** ✓ shipped — static type checker, interactive REPL, ad-hoc polymorphism for PASSAGEs.
+- **v0.3** ✓ shipped — `CAVITY` storage, runtime-sized `BUFFER`, byte I/O, string inspection, `OVER`/`ROT`/`NIP`, `LOAD`/`STORE`. ANAL is now Turing-complete in the strict sense; bigger programs are now writeable.
+- **v0.4** — a standard library written in ANAL itself, loaded via `INGEST`. Common patterns (string split, buffer-backed lists, formatted output) move out of the language and into prose.
+- **v0.5** — a proper module system. Multiple `.anal` files coexist with namespacing; `INGEST` finally means import.
 - **v1.0** — `analc`, the self-hosted compiler. ANAL compiling ANAL into `.sph` bytecode.
-- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§9](https://anal-lang.github.io/anal/#suppository); neither shipped.
+- **Ecosystem** — `suppository`, the package manager, and `registry.sph`, the registry it talks to. Both fully spec'd at [§11](https://anal-lang.github.io/anal/#suppository); neither shipped.
 
 No timelines. ANAL does not rush.
 

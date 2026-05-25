@@ -1,0 +1,149 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "ANAL",
+  "scopeName": "source.anal",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#passage-declaration" },
+    { "include": "#passage-call" },
+    { "include": "#keywords-header" },
+    { "include": "#keywords-control" },
+    { "include": "#keywords-consent" },
+    { "include": "#keywords-io" },
+    { "include": "#keywords-storage" },
+    { "include": "#keywords-stack" },
+    { "include": "#constants-language" },
+    { "include": "#numbers" },
+    { "include": "#brackets" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.anal",
+          "match": ";.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.anal",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.anal",
+          "match": "\\\\[ntr\\\\\"]"
+        }
+      ]
+    },
+    "passage-declaration": {
+      "match": "\\b(PASSAGE)\\s+([A-Za-z_][A-Za-z_0-9]*)\\s*(:)",
+      "captures": {
+        "1": { "name": "keyword.control.anal" },
+        "2": { "name": "entity.name.function.anal" },
+        "3": { "name": "punctuation.separator.colon.anal" }
+      }
+    },
+    "passage-call": {
+      "match": "\\b(ENTER)\\s+([A-Za-z_][A-Za-z_0-9]*)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.anal" },
+        "2": { "name": "entity.name.function.anal" }
+      }
+    },
+    "keywords-header": {
+      "patterns": [
+        {
+          "name": "keyword.declaration.anal",
+          "match": "\\b(ANAL|VERSION|INGEST)\\b"
+        }
+      ]
+    },
+    "keywords-control": {
+      "patterns": [
+        {
+          "name": "keyword.control.anal",
+          "match": "\\b(DILATE|CONSTRICT|IF_TIGHT|IF_LOOSE|PASSAGE|ENTER|EXIT|ABORT|HOLD|RESUME)\\b"
+        }
+      ]
+    },
+    "keywords-consent": {
+      "comment": "Consent and clench ops are modifiers on the next destructive operation, semantically akin to `const`/`mut`/`async` in other languages. The `storage.modifier` scope is what themes reliably colour distinctly from regular keywords — which is the visual story we want for the consent vocabulary.",
+      "patterns": [
+        {
+          "name": "storage.modifier.consent.anal",
+          "match": "\\b(PREP|CONSENT|RELAX|CLENCH|RELEASE)\\b"
+        }
+      ]
+    },
+    "keywords-io": {
+      "patterns": [
+        {
+          "name": "support.function.io.anal",
+          "match": "\\b(RECEIVE|EXPEL|DISCHARGE|EVACUATE|RECEIVE_BYTE|EMIT_BYTE|PROBE)\\b"
+        }
+      ]
+    },
+    "keywords-storage": {
+      "patterns": [
+        {
+          "name": "support.function.storage.anal",
+          "match": "\\b(BUFFER|BUFGET|BUFSET|BUFLEN|LOAD|STORE)\\b"
+        },
+        {
+          "name": "support.function.string.anal",
+          "match": "\\b(STRLEN|CHARAT|SUBSTR)\\b"
+        }
+      ]
+    },
+    "keywords-stack": {
+      "patterns": [
+        {
+          "name": "keyword.operator.stack.anal",
+          "match": "\\b(PUSH|POP|DUP|SWAP|OVER|ROT|NIP|DEPTH|INSERT|EXTRACT|FLUSH|EXPAND)\\b"
+        },
+        {
+          "name": "keyword.operator.arithmetic.anal",
+          "match": "\\b(ADD|SUB|MUL|DIV|MOD)\\b"
+        },
+        {
+          "name": "keyword.operator.comparison.anal",
+          "match": "\\b(EQ|LT|GT|LTE|GTE|NOT)\\b"
+        },
+        {
+          "name": "keyword.operator.conversion.anal",
+          "match": "\\b(TO_INT|TO_FLOAT|TO_STRING)\\b"
+        }
+      ]
+    },
+    "constants-language": {
+      "patterns": [
+        {
+          "name": "constant.language.anal",
+          "match": "\\b(TRUE|FALSE)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.anal",
+          "match": "-?\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.anal",
+          "match": "-?\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "brackets": {
+      "patterns": [
+        {
+          "name": "punctuation.section.brackets.anal",
+          "match": "[\\[\\]]"
+        }
+      ]
+    }
+  }
+}

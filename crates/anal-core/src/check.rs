@@ -57,6 +57,7 @@ pub enum Ty {
     Str,
     Bool,
     Bloc,
+    Cavity,
     Top,
 }
 
@@ -68,6 +69,7 @@ impl Ty {
             Ty::Str => "STRING",
             Ty::Bool => "BOOL",
             Ty::Bloc => "BLOC",
+            Ty::Cavity => "CAVITY",
             Ty::Top => "<any>",
         }
     }
@@ -90,6 +92,7 @@ fn ty_of(value: &Value) -> Ty {
         Value::Str(_) => Ty::Str,
         Value::Bool(_) => Ty::Bool,
         Value::Bloc(_) => Ty::Bloc,
+        Value::Cavity(_) => Ty::Cavity,
     }
 }
 
@@ -282,6 +285,39 @@ impl<'a> Ctx<'a> {
                     let n = stack.len();
                     stack.swap(n - 1, n - 2);
                 }
+                Op::Over => {
+                    if stack.len() < 2 {
+                        return Err(AnalError::Mismatch {
+                            message: "OVER needs at least two values on the stack".into(),
+                            span,
+                        });
+                    }
+                    let second = stack[stack.len() - 2];
+                    stack.push(second);
+                }
+                Op::Rot => {
+                    if stack.len() < 3 {
+                        return Err(AnalError::Mismatch {
+                            message: "ROT needs at least three values on the stack".into(),
+                            span,
+                        });
+                    }
+                    let n = stack.len();
+                    // (a b c -- b c a): remove element at depth 2, push to top.
+                    let third = stack.remove(n - 3);
+                    stack.push(third);
+                }
+                Op::Nip => {
+                    if stack.len() < 2 {
+                        return Err(AnalError::Mismatch {
+                            message: "NIP needs at least two values on the stack".into(),
+                            span,
+                        });
+                    }
+                    let n = stack.len();
+                    // (a b -- b): drop the second-from-top.
+                    stack.remove(n - 2);
+                }
                 Op::Depth => stack.push(Ty::Int),
                 Op::Extract(_) => {
                     // EXTRACT removes one value; we don't know its type
@@ -428,6 +464,114 @@ impl<'a> Ctx<'a> {
                 Op::ToStr => {
                     pop_any(stack, "TO_STRING", span)?;
                     stack.push(Ty::Str);
+                }
+
+                // ── byte I/O ──
+                Op::ReceiveByte => stack.push(Ty::Int),
+                Op::EmitByte => {
+                    pop_expect(stack, &[Ty::Int], "EMIT_BYTE", span)?;
+                }
+
+                // ── string inspection ──
+                Op::Strlen => {
+                    pop_expect(stack, &[Ty::Str], "STRLEN", span)?;
+                    stack.push(Ty::Int);
+                }
+                Op::Charat => {
+                    pop_expect(stack, &[Ty::Int], "CHARAT", span)?;
+                    pop_expect(stack, &[Ty::Str], "CHARAT", span)?;
+                    stack.push(Ty::Int);
+                }
+                Op::Substr => {
+                    pop_expect(stack, &[Ty::Int], "SUBSTR", span)?;
+                    pop_expect(stack, &[Ty::Int], "SUBSTR", span)?;
+                    pop_expect(stack, &[Ty::Str], "SUBSTR", span)?;
+                    stack.push(Ty::Str);
+                }
+
+                // ── external storage ──
+                // BUFFER allocates a fresh CAVITY and pushes it.
+                // The literal form is stack-shape neutral on entry;
+                // the dynamic form pops an INT size first.
+                Op::Buffer(_) => stack.push(Ty::Cavity),
+                Op::BufferDyn => {
+                    pop_expect(stack, &[Ty::Int], "BUFFER", span)?;
+                    stack.push(Ty::Cavity);
+                }
+                // BUFGET: pop INT index, peek CAVITY below it, push the
+                // read INT *above* the CAVITY. Net effect: index consumed,
+                // INT result pushed; CAVITY untouched.
+                Op::Bufget => {
+                    pop_expect(stack, &[Ty::Int], "BUFGET", span)?;
+                    let below = peek(stack, "BUFGET", span)?;
+                    if !matches!(below, Ty::Cavity | Ty::Top) {
+                        return Err(AnalError::Mismatch {
+                            message: format!(
+                                "BUFGET expects a CAVITY below the index, found {}",
+                                below.name()
+                            ),
+                            span,
+                        });
+                    }
+                    stack.push(Ty::Int);
+                }
+                // BUFSET: pop INT value, INT index, leaving CAVITY on top.
+                // CAVITY must be there; we don't pop it.
+                Op::Bufset => {
+                    pop_expect(stack, &[Ty::Int], "BUFSET", span)?;
+                    pop_expect(stack, &[Ty::Int], "BUFSET", span)?;
+                    let below = peek(stack, "BUFSET", span)?;
+                    if !matches!(below, Ty::Cavity | Ty::Top) {
+                        return Err(AnalError::Mismatch {
+                            message: format!(
+                                "BUFSET expects a CAVITY below the index and value, found {}",
+                                below.name()
+                            ),
+                            span,
+                        });
+                    }
+                }
+                // BUFLEN: peek CAVITY, push INT above it.
+                Op::Buflen => {
+                    let top = peek(stack, "BUFLEN", span)?;
+                    if !matches!(top, Ty::Cavity | Ty::Top) {
+                        return Err(AnalError::Mismatch {
+                            message: format!(
+                                "BUFLEN expects a CAVITY on top, found {}",
+                                top.name()
+                            ),
+                            span,
+                        });
+                    }
+                    stack.push(Ty::Int);
+                }
+                // LOAD <i>: peek CAVITY, push INT.
+                Op::Load(_) => {
+                    let top = peek(stack, "LOAD", span)?;
+                    if !matches!(top, Ty::Cavity | Ty::Top) {
+                        return Err(AnalError::Mismatch {
+                            message: format!(
+                                "LOAD expects a CAVITY on top, found {}",
+                                top.name()
+                            ),
+                            span,
+                        });
+                    }
+                    stack.push(Ty::Int);
+                }
+                // STORE <i>: pop INT value, peek CAVITY beneath.
+                Op::Store(_) => {
+                    pop_expect(stack, &[Ty::Int], "STORE", span)?;
+                    let below = peek(stack, "STORE", span)?;
+                    if !matches!(below, Ty::Cavity | Ty::Top) {
+                        return Err(AnalError::Mismatch {
+                            message: format!(
+                                "STORE expects a CAVITY below the value, found {}",
+                                below.name()
+                            ),
+                            span,
+                        });
+                    }
                 }
             }
 
@@ -710,6 +854,290 @@ ADD"#,
         let err = check_err(
             r#"PUSH 1
 SWAP"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn over_copies_second_to_top() {
+        // OVER: (a b -- a b a). After PUSH 1 PUSH 2 OVER, stack is [1, 2, 1],
+        // so three DISCHARGEs in a row work.
+        check_ok(
+            r#"PUSH 1
+PUSH 2
+OVER
+DISCHARGE
+DISCHARGE
+DISCHARGE"#,
+        );
+    }
+
+    #[test]
+    fn over_with_less_than_two_is_mismatch() {
+        let err = check_err("PUSH 1 OVER");
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn rot_lifts_third_to_top() {
+        // ROT: (a b c -- b c a). Three pushes then ROT then three DISCHARGEs.
+        check_ok(
+            r#"PUSH 1
+PUSH 2
+PUSH 3
+ROT
+DISCHARGE
+DISCHARGE
+DISCHARGE"#,
+        );
+    }
+
+    #[test]
+    fn rot_with_less_than_three_is_mismatch() {
+        let err = check_err(
+            r#"PUSH 1
+PUSH 2
+ROT"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn nip_drops_second() {
+        check_ok(
+            r#"PUSH 1
+PUSH 2
+NIP
+DISCHARGE"#,
+        );
+    }
+
+    #[test]
+    fn nip_on_one_value_is_mismatch() {
+        let err = check_err("PUSH 1 NIP");
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    // ── v0.3 primitives ──
+
+    #[test]
+    fn strlen_pops_string_pushes_int() {
+        check_ok(
+            r#"PUSH "hi"
+STRLEN
+PUSH 1
+ADD"#,
+        );
+    }
+
+    #[test]
+    fn strlen_on_int_is_mismatch() {
+        let err = check_err("PUSH 42 STRLEN");
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn charat_takes_string_then_int() {
+        check_ok(
+            r#"PUSH "hi"
+PUSH 0
+CHARAT
+EMIT_BYTE"#,
+        );
+    }
+
+    #[test]
+    fn charat_with_swapped_args_is_mismatch() {
+        // CHARAT wants STRING below, INT on top. Reversed: top is STRING,
+        // INT is below — checker should reject.
+        let err = check_err(
+            r#"PUSH 0
+PUSH "hi"
+CHARAT"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn substr_returns_string() {
+        check_ok(
+            r#"PUSH "hello"
+PUSH 1
+PUSH 3
+SUBSTR
+DISCHARGE"#,
+        );
+    }
+
+    #[test]
+    fn buffer_pushes_cavity_and_buflen_keeps_it() {
+        // BUFFER -> [CAVITY], BUFLEN -> [CAVITY, INT], so we can still
+        // POP the CAVITY afterwards. If BUFLEN consumed the CAVITY,
+        // POP would underflow (no static error since POP accepts any
+        // type, but stack-shape would be wrong for a later op).
+        check_ok(
+            r#"BUFFER 4
+BUFLEN
+DISCHARGE
+POP"#,
+        );
+    }
+
+    #[test]
+    fn bufget_keeps_cavity_returns_int() {
+        // After BUFGET we expect [CAVITY, INT]. Discharge the INT,
+        // then POP the CAVITY — both should typecheck.
+        check_ok(
+            r#"BUFFER 4
+PUSH 0
+BUFGET
+DISCHARGE
+POP"#,
+        );
+    }
+
+    #[test]
+    fn bufget_on_string_is_mismatch() {
+        let err = check_err(
+            r#"PUSH "hi"
+PUSH 0
+BUFGET"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn bufset_keeps_cavity() {
+        // After BUFSET, the CAVITY remains; we should be able to
+        // BUFGET it back without error.
+        check_ok(
+            r#"BUFFER 4
+PUSH 2 PUSH 42
+PREP CONSENT
+BUFSET
+PUSH 2
+BUFGET
+DISCHARGE
+POP"#,
+        );
+    }
+
+    #[test]
+    fn bufset_without_cavity_underneath_is_mismatch() {
+        // BUFSET expects a CAVITY below the index and value. Here
+        // there's an INT instead.
+        let err = check_err(
+            r#"PUSH 99
+PUSH 0 PUSH 1
+PREP CONSENT
+BUFSET"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn buflen_on_int_is_mismatch() {
+        let err = check_err("PUSH 1 BUFLEN");
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn receive_byte_pushes_int() {
+        check_ok(
+            r#"RECEIVE_BYTE
+PUSH 1
+ADD
+DISCHARGE"#,
+        );
+    }
+
+    #[test]
+    fn emit_byte_requires_int() {
+        let err = check_err(
+            r#"PUSH "hi"
+EMIT_BYTE"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn hollow_buffer_zero_is_parse_error() {
+        // BUFFER 0 should be rejected at parse time, not at runtime.
+        let err = compile("BUFFER 0").unwrap_err();
+        assert!(matches!(err, AnalError::Hollow { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn buffer_dynamic_pops_int_size() {
+        // Bare BUFFER (no literal) takes its size from the stack at
+        // runtime. Typecheck: it pops one INT and pushes a CAVITY.
+        check_ok(
+            r#"PUSH 16
+BUFFER
+BUFLEN
+DISCHARGE
+POP"#,
+        );
+    }
+
+    #[test]
+    fn buffer_dynamic_with_string_size_is_mismatch() {
+        let err = check_err(
+            r#"PUSH "nope"
+BUFFER"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn load_pushes_int_keeps_cavity() {
+        // LOAD <i>: peeks CAVITY, pushes INT. After it, [CAVITY, INT].
+        check_ok(
+            r#"BUFFER 4
+LOAD 2
+DISCHARGE
+POP"#,
+        );
+    }
+
+    #[test]
+    fn load_on_int_is_mismatch() {
+        let err = check_err("PUSH 1 LOAD 0");
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn store_pops_value_keeps_cavity() {
+        // STORE <i>: pops INT value, peeks CAVITY. After: [CAVITY].
+        check_ok(
+            r#"BUFFER 4
+PUSH 99
+PREP CONSENT
+STORE 2
+LOAD 2
+DISCHARGE
+POP"#,
+        );
+    }
+
+    #[test]
+    fn store_without_cavity_is_mismatch() {
+        let err = check_err(
+            r#"PUSH 0
+PUSH 99
+PREP CONSENT
+STORE 0"#,
+        );
+        assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn store_with_string_value_is_mismatch() {
+        let err = check_err(
+            r#"BUFFER 4
+PUSH "nope"
+PREP CONSENT
+STORE 0"#,
         );
         assert!(matches!(err, AnalError::Mismatch { .. }), "got {err:?}");
     }

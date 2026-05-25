@@ -1,0 +1,35 @@
+{
+  "name": "vscode-anal",
+  "displayName": "ANAL",
+  "description": "Syntax highlighting and language configuration for the ANAL programming language.",
+  "version": "0.1.0",
+  "publisher": "anal-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anal-lang/anal"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "anal",
+        "aliases": ["ANAL", "anal"],
+        "extensions": [".anal"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "anal",
+        "scopeName": "source.anal",
+        "path": "./syntaxes/anal.tmLanguage.json"
+      }
+    ]
+  }
+}
