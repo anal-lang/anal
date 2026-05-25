@@ -82,7 +82,7 @@ try {
   $expected = (Get-Content $sumPath -Raw).Trim().Split(' ')[0].ToLowerInvariant()
   $actual   = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($expected -ne $actual) {
-    Die "checksum mismatch — refusing insertion (expected $expected, got $actual)"
+    Die "checksum mismatch -- refusing insertion (expected $expected, got $actual)"
   }
 
   Note 'unpacking...'
