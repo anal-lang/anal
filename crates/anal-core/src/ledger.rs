@@ -46,12 +46,21 @@ use std::io::{self, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MAGIC: [u8; 4] = *b"SPHL";
-pub const VERSION: u8 = 0x01;
+/// Current on-disk format version. Bumped to `0x02` in v0.4.4 to admit
+/// records for arming ops (`PREP`, `CONSENT`, `CLENCH`, `RELEASE`,
+/// `RELAX`) written when `--ledger-verbose` is active. Readers from
+/// v0.4.0..=v0.4.3 will reject `0x02` files with `UnsupportedVersion`,
+/// which is the intended behaviour: a verbose ledger contains tags an
+/// older reader would not know how to interpret.
+pub const VERSION: u8 = 0x02;
 pub const HEADER_SIZE: usize = 40;
 pub const RECORD_SIZE: usize = 72;
 
-/// Tag byte identifying which destructive op fired. Stable across
-/// versions — new ops append to the list rather than reordering.
+/// Tag byte identifying which op fired. Tags 1..=6 mark destructive
+/// ops and are always recorded. Tags 7..=11 mark arming ops and are
+/// only recorded when the sink is in verbose mode. New tags append to
+/// the list rather than reordering, so a reader can safely decode an
+/// op it knows about even when a future writer added other tags.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpTag {
@@ -63,6 +72,16 @@ pub enum OpTag {
     /// EVACUATE only logs when it overwrites an existing file —
     /// the case that requires CONSENT.
     EvacuateOverwrite = 6,
+    /// Verbose-only: PREP arms a one-shot INSERT capability.
+    Prep = 7,
+    /// Verbose-only: CONSENT arms a one-shot destructive capability.
+    Consent = 8,
+    /// Verbose-only: CLENCH opens a depth in which writes are refused.
+    Clench = 9,
+    /// Verbose-only: RELEASE closes the most recent CLENCH.
+    Release = 10,
+    /// Verbose-only: RELAX clears any armed PREP/CONSENT latches.
+    Relax = 11,
 }
 
 impl OpTag {
@@ -74,6 +93,11 @@ impl OpTag {
             4 => OpTag::Bufset,
             5 => OpTag::Store,
             6 => OpTag::EvacuateOverwrite,
+            7 => OpTag::Prep,
+            8 => OpTag::Consent,
+            9 => OpTag::Clench,
+            10 => OpTag::Release,
+            11 => OpTag::Relax,
             _ => return None,
         })
     }
@@ -86,7 +110,27 @@ impl OpTag {
             OpTag::Bufset => "BUFSET",
             OpTag::Store => "STORE",
             OpTag::EvacuateOverwrite => "EVACUATE",
+            OpTag::Prep => "PREP",
+            OpTag::Consent => "CONSENT",
+            OpTag::Clench => "CLENCH",
+            OpTag::Release => "RELEASE",
+            OpTag::Relax => "RELAX",
         }
+    }
+
+    /// Whether this tag denotes a destructive op (1..=6) or an arming
+    /// op (7..=11). Arming ops are skipped when a sink is non-verbose;
+    /// destructive ops are always recorded.
+    pub fn is_destructive(self) -> bool {
+        matches!(
+            self,
+            OpTag::Insert
+                | OpTag::Extract
+                | OpTag::Flush
+                | OpTag::Bufset
+                | OpTag::Store
+                | OpTag::EvacuateOverwrite,
+        )
     }
 }
 
@@ -199,6 +243,7 @@ pub struct LedgerSink<W: Write> {
     out: W,
     next_seq: u64,
     prev_hash: [u8; 32],
+    verbose: bool,
 }
 
 impl<W: Write> LedgerSink<W> {
@@ -217,12 +262,30 @@ impl<W: Write> LedgerSink<W> {
             out,
             next_seq: 0,
             prev_hash: [0u8; 32],
+            verbose: false,
         })
+    }
+
+    /// Engage verbose mode: arming ops (`PREP`, `CONSENT`, `CLENCH`,
+    /// `RELEASE`, `RELAX`) will be recorded alongside destructive ops.
+    /// Default-off; once engaged the sink stays verbose for its life.
+    pub fn enable_verbose(&mut self) {
+        self.verbose = true;
+    }
+
+    /// Whether the sink is in verbose mode.
+    pub fn is_verbose(&self) -> bool {
+        self.verbose
     }
 
     /// Append a record. Fills in `seq` and `ts_micros` from the sink's
     /// own state, hash-chains it onto the prior record, and writes the
     /// fixed-size record to the underlying writer.
+    ///
+    /// Arming-op tags (`PREP`/`CONSENT`/`CLENCH`/`RELEASE`/`RELAX`) are
+    /// silently dropped when verbose mode is off; destructive ops are
+    /// always written. Returns `Ok(None)` for the silently-dropped
+    /// case so callers don't have to special-case the gate themselves.
     pub fn record(
         &mut self,
         op: OpTag,
@@ -230,7 +293,10 @@ impl<W: Write> LedgerSink<W> {
         span_end: u32,
         stack_depth: u32,
         top_types: &[TypeTag],
-    ) -> io::Result<u64> {
+    ) -> io::Result<Option<u64>> {
+        if !op.is_destructive() && !self.verbose {
+            return Ok(None);
+        }
         let seq = self.next_seq;
         let ts_micros = now_micros();
         let bytes = encode_record(
@@ -246,7 +312,7 @@ impl<W: Write> LedgerSink<W> {
         self.out.write_all(&bytes)?;
         self.prev_hash = blake3::hash(&bytes).into();
         self.next_seq += 1;
-        Ok(seq)
+        Ok(Some(seq))
     }
 
     /// Flush the underlying writer. Callers should invoke this before

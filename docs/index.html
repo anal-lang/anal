@@ -1346,6 +1346,14 @@ footer {
 
   <p>The named file must not already exist; <code>anal</code> refuses to overwrite a ledger, since a single ledger pairs one-to-one with a single run. The header is written immediately and includes a blake3 hash of the source file. Each subsequent destructive op (<code>INSERT</code>, <code>EXTRACT</code>, <code>FLUSH</code>, <code>BUFSET</code>, <code>STORE</code>, and an <code>EVACUATE</code> that overwrote an existing file) appends one fixed-size record. Failed ops do not appear in the log — the ledger records what was <em>done</em>, not what was <em>attempted</em>.</p>
 
+  <h3 style="margin-top: 1rem;">Verbose mode</h3>
+
+<pre><span class="t-prompt">$ </span>anal run --ledger run.sphlog --ledger-verbose program.anal</pre>
+
+  <p>By default the ledger records only consummated destructive acts. With <code>--ledger-verbose</code>, the five <strong>arming ops</strong> — <code>PREP</code>, <code>CONSENT</code>, <code>CLENCH</code>, <code>RELEASE</code>, <code>RELAX</code> — are also recorded, in execution order. The result is a complete consent trail: not just <em>what was done</em> but <em>what was prepared</em>, <em>how long it sat armed</em>, and <em>whether anything was armed and then released without being spent</em>.</p>
+
+  <p>Records share the same fixed-size layout regardless of verbosity; the only difference is which <code>op_tag</code> values appear. A verbose ledger increases the file's <code>version</code> field to <code>0x02</code>, so a reader from an earlier release rejects it with <code>UnsupportedVersion</code> instead of silently misreading.</p>
+
   <h2>Auditing a run</h2>
 
 <pre><span class="t-prompt">$ </span>anal audit run.sphlog program.anal
@@ -1383,7 +1391,7 @@ footer {
 
 <pre>offset  size  field         notes
   0      4    magic         b"SPHL"
-  4      1    version       0x01
+  4      1    version       0x02 (bumped in v0.4.4 to admit arming-op tags)
   5      3    reserved      zero
   8     32    source_hash   blake3 of source file at run time</pre>
 
@@ -1392,8 +1400,11 @@ footer {
 <pre>offset  size  field         notes
   0      8    seq           u64, 0-based
   8      8    ts_micros     i64, unix epoch microseconds
- 16      1    op_tag        1=INSERT 2=EXTRACT 3=FLUSH
-                            4=BUFSET 5=STORE   6=EVACUATE
+ 16      1    op_tag        destructive: 1=INSERT 2=EXTRACT 3=FLUSH
+                                         4=BUFSET 5=STORE   6=EVACUATE
+                            arming (verbose only):
+                                         7=PREP   8=CONSENT 9=CLENCH
+                                         10=RELEASE 11=RELAX
  17      1    reserved      zero
  18      4    span_start    u32, byte offset into source
  22      4    span_end      u32, byte offset into source

@@ -61,6 +61,12 @@ enum Cmd {
         /// one-to-one.
         #[arg(long, value_name = "PATH")]
         ledger: Option<PathBuf>,
+        /// Also record arming ops (`PREP`, `CONSENT`, `CLENCH`,
+        /// `RELEASE`, `RELAX`) to the ledger. No effect without
+        /// `--ledger`. Produces a complete consent trail instead of
+        /// only the destructive acts.
+        #[arg(long, requires = "ledger")]
+        ledger_verbose: bool,
         /// Run in `--hard` mode: no ambient filesystem authority.
         /// `INGEST` and `EVACUATE` raise `OUTSIDE` (E019) unless the
         /// program has authorised the exact target through `REQUEST`.
@@ -124,7 +130,12 @@ fn main() -> ExitCode {
             print_version();
             ExitCode::SUCCESS
         }
-        Cmd::Run { file, ledger, hard } => run(&file, ledger.as_deref(), hard, flags),
+        Cmd::Run {
+            file,
+            ledger,
+            ledger_verbose,
+            hard,
+        } => run(&file, ledger.as_deref(), ledger_verbose, hard, flags),
         Cmd::Probe { file } => probe(&file, flags),
         Cmd::Audit {
             ledger,
@@ -179,7 +190,13 @@ fn execute_source(source: &str, source_id: &str, flags: Flags) -> ExitCode {
     }
 }
 
-fn run(path: &Path, ledger_path: Option<&Path>, hard: bool, flags: Flags) -> ExitCode {
+fn run(
+    path: &Path,
+    ledger_path: Option<&Path>,
+    ledger_verbose: bool,
+    hard: bool,
+    flags: Flags,
+) -> ExitCode {
     let source = match read_source(path) {
         Ok(s) => s,
         Err(code) => return code,
@@ -207,15 +224,23 @@ fn run(path: &Path, ledger_path: Option<&Path>, hard: bool, flags: Flags) -> Exi
     }
 
     if let Some(ledger_path) = ledger_path {
-        match open_ledger(ledger_path, &source) {
-            Ok(sink) => vm.attach_ledger(Some(sink)),
+        let sink = match open_ledger(ledger_path, &source) {
+            Ok(mut s) => {
+                if ledger_verbose {
+                    s.enable_verbose();
+                }
+                s
+            }
             Err(code) => return code,
-        }
+        };
+        vm.attach_ledger(Some(sink));
         if flags.verbose {
-            eprintln!(
-                "LEDGER {} (recording destructive ops)",
-                ledger_path.display()
-            );
+            let mode = if ledger_verbose {
+                "verbose"
+            } else {
+                "destructive ops only"
+            };
+            eprintln!("LEDGER {} ({mode})", ledger_path.display());
         }
     }
 
@@ -317,7 +342,7 @@ fn audit(ledger_path: &Path, source_path: &Path, examine: bool, flags: Flags) ->
             return ExitCode::FAILURE;
         }
     };
-    let destructive = collect_destructive_ops(&program);
+    let loggable = collect_loggable_ops(&program);
 
     // Collect verified records as we walk. Holding them lets
     // `--examine` print without re-reading the file; the cost is
@@ -346,7 +371,7 @@ fn audit(ledger_path: &Path, source_path: &Path, examine: bool, flags: Flags) ->
             start: record.span_start as usize,
             end: record.span_end as usize,
         };
-        match destructive.get(&span) {
+        match loggable.get(&span) {
             Some(source_op) if *source_op == record.op => {
                 records.push(record);
             }
@@ -364,7 +389,7 @@ fn audit(ledger_path: &Path, source_path: &Path, examine: bool, flags: Flags) ->
                 let err = AnalError::LedgerGap {
                     seq: record.seq,
                     ledger_op: record.op.name(),
-                    source_op: "(no destructive op at this span)",
+                    source_op: "(no loggable op at this span)",
                     span,
                 };
                 print_anal_error(source_path, &source, &err, flags);
@@ -554,10 +579,13 @@ fn format_stack_shape(top_types: &[anal_core::LedgerTypeTag], depth: u32) -> Str
     }
 }
 
-/// Walk `program` and collect every destructive op's span, paired with
+/// Walk `program` and collect every loggable op's span, paired with
 /// its ledger tag. The audit uses this to confirm each ledger record's
-/// (span, op) matches the source.
-fn collect_destructive_ops(program: &Program) -> HashMap<Span, LedgerOpTag> {
+/// (span, op) matches the source. Covers both destructive ops (always
+/// loggable) and arming ops (only loggable under `--ledger-verbose`,
+/// but the audit doesn't know which mode produced the ledger, so it
+/// accepts either).
+fn collect_loggable_ops(program: &Program) -> HashMap<Span, LedgerOpTag> {
     let mut out = HashMap::new();
     walk_block(&program.main, &mut out);
     for body in program.passages.values() {
@@ -569,12 +597,19 @@ fn collect_destructive_ops(program: &Program) -> HashMap<Span, LedgerOpTag> {
 fn walk_block(code: &[Instr], out: &mut HashMap<Span, LedgerOpTag>) {
     for instr in code {
         let tag = match instr.op {
+            // Destructive (always logged).
             Op::Insert { .. } => Some(LedgerOpTag::Insert),
             Op::Extract(_) => Some(LedgerOpTag::Extract),
             Op::Flush => Some(LedgerOpTag::Flush),
             Op::Bufset => Some(LedgerOpTag::Bufset),
             Op::Store(_) => Some(LedgerOpTag::Store),
             Op::Evacuate(_) => Some(LedgerOpTag::EvacuateOverwrite),
+            // Arming (only present under --ledger-verbose).
+            Op::Prep => Some(LedgerOpTag::Prep),
+            Op::Consent => Some(LedgerOpTag::Consent),
+            Op::Clench => Some(LedgerOpTag::Clench),
+            Op::Release => Some(LedgerOpTag::Release),
+            Op::Relax => Some(LedgerOpTag::Relax),
             _ => None,
         };
         if let Some(t) = tag {

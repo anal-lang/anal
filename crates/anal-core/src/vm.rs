@@ -512,26 +512,41 @@ impl VM {
             // the stack).
             Op::Prep => {
                 self.check_unclenched("PREP", span)?;
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 self.prep_armed = true;
+                self.log_event(OpTag::Prep, span, depth_before, &top_before)?;
             }
             Op::Consent => {
                 self.check_unclenched("CONSENT", span)?;
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 self.consent_armed = true;
+                self.log_event(OpTag::Consent, span, depth_before, &top_before)?;
             }
             Op::Clench => {
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 self.clench_depth = self.clench_depth.saturating_add(1);
+                self.log_event(OpTag::Clench, span, depth_before, &top_before)?;
             }
             Op::Release => {
                 if self.clench_depth == 0 {
                     return Err(AnalError::PrematureRelease { span });
                 }
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 self.clench_depth -= 1;
+                self.log_event(OpTag::Release, span, depth_before, &top_before)?;
             }
             Op::Relax => {
                 // Idempotent — clears whatever was armed. Allowed during
                 // CLENCH because it doesn't touch the stack.
+                let depth_before = self.stack.len() as u32;
+                let top_before = self.top_types();
                 self.prep_armed = false;
                 self.consent_armed = false;
+                self.log_event(OpTag::Relax, span, depth_before, &top_before)?;
             }
 
             // ── Authorised mutation: INSERT, EXTRACT, FLUSH ─────
@@ -558,7 +573,7 @@ impl VM {
                 let idx = len - *depth;
                 self.push_at(idx, value.clone(), span)?;
                 self.prep_armed = false;
-                self.log_destructive(OpTag::Insert, span, depth_before, &top_before)?;
+                self.log_event(OpTag::Insert, span, depth_before, &top_before)?;
             }
             Op::Extract(depth) => {
                 self.check_unclenched("EXTRACT", span)?;
@@ -581,7 +596,7 @@ impl VM {
                 let idx = len - 1 - *depth;
                 self.stack.remove(idx);
                 self.consent_armed = false;
-                self.log_destructive(OpTag::Extract, span, depth_before, &top_before)?;
+                self.log_event(OpTag::Extract, span, depth_before, &top_before)?;
             }
             Op::Flush => {
                 self.check_unclenched("FLUSH", span)?;
@@ -592,7 +607,7 @@ impl VM {
                 let top_before = self.top_types();
                 self.stack.clear();
                 self.consent_armed = false;
-                self.log_destructive(OpTag::Flush, span, depth_before, &top_before)?;
+                self.log_event(OpTag::Flush, span, depth_before, &top_before)?;
             }
 
             // ── EXPAND ──────────────────────────────────────────
@@ -678,12 +693,7 @@ impl VM {
                 // creating EVACUATE writes a new file and needs no
                 // CONSENT — the ledger records consent-bearing acts only.
                 if overwriting {
-                    self.log_destructive(
-                        OpTag::EvacuateOverwrite,
-                        span,
-                        depth_before,
-                        &top_before,
-                    )?;
+                    self.log_event(OpTag::EvacuateOverwrite, span, depth_before, &top_before)?;
                 }
             }
             Op::Receive => {
@@ -1149,7 +1159,7 @@ impl VM {
                 self.prep_armed = false;
                 self.consent_armed = false;
                 drop(cells);
-                self.log_destructive(OpTag::Bufset, span, depth_before, &top_before)?;
+                self.log_event(OpTag::Bufset, span, depth_before, &top_before)?;
             }
             Op::Buflen => {
                 let cavity = match self.peek("BUFLEN", span)? {
@@ -1232,7 +1242,7 @@ impl VM {
                 self.prep_armed = false;
                 self.consent_armed = false;
                 drop(cells);
-                self.log_destructive(OpTag::Store, span, depth_before, &top_before)?;
+                self.log_event(OpTag::Store, span, depth_before, &top_before)?;
             }
         }
         Ok(Flow::Continue)
@@ -1300,13 +1310,18 @@ impl VM {
     }
 
     /// Append a record to the attached ledger, if any. Called from each
-    /// destructive op's arm *after* the op succeeded. `depth_before` and
+    /// op's arm *after* the op succeeded. `depth_before` and
     /// `top_types_before` must reflect the pre-op stack state — the
     /// audit verifies the recorded shape against the source's
     /// statically-checkable shape at that span. I/O failures bubble up
     /// as `Rejection` so the program halts loudly rather than silently
     /// dropping audit entries.
-    fn log_destructive(
+    ///
+    /// The sink itself decides whether an arming-op record actually
+    /// reaches disk (only when `--ledger-verbose`); destructive ops
+    /// are always written. The dropped-record case returns `Ok(None)`
+    /// from the sink, which this helper discards transparently.
+    fn log_event(
         &mut self,
         op: OpTag,
         span: Span,
@@ -2653,6 +2668,52 @@ DISCHARGE"#);
         (records, result)
     }
 
+    /// Same as [`run_with_ledger`] but engages verbose mode on the
+    /// sink, so arming ops (PREP/CONSENT/CLENCH/RELEASE/RELAX) appear
+    /// in the decoded record stream too.
+    fn run_with_verbose_ledger(
+        src: &str,
+    ) -> (Vec<crate::ledger::LedgerRecord>, Result<(), AnalError>) {
+        use crate::ledger::{hash_source, LedgerReader, LedgerSink};
+        use std::cell::RefCell;
+        use std::io::Cursor;
+
+        let program = compile(src).expect("program must compile");
+        let mut input = Cursor::new(b"");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        struct SharedBuf(Rc<RefCell<Vec<u8>>>);
+        impl io::Write for SharedBuf {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.0.borrow_mut().write(b)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let shared: Box<dyn io::Write> = Box::new(SharedBuf(Rc::clone(&buf)));
+        let mut sink = LedgerSink::new(shared, hash_source(src)).expect("header writes");
+        sink.enable_verbose();
+        let mut vm = VM::new();
+        vm.attach_ledger(Some(sink));
+        let result = vm.run(&program, &mut input, &mut out, &mut err);
+
+        drop(vm);
+        let bytes = Rc::try_unwrap(buf)
+            .unwrap_or_else(|_| panic!("sink dropped"))
+            .into_inner();
+
+        let mut reader = LedgerReader::open(Cursor::new(bytes)).expect("header readable");
+        let mut records = Vec::new();
+        while let Some(r) = reader.next_record().expect("record decodes") {
+            records.push(r);
+        }
+        (records, result)
+    }
+
     #[test]
     fn ledger_records_a_flush() {
         use crate::ledger::{OpTag, TypeTag};
@@ -2988,5 +3049,56 @@ EVACUATE "out.txt""#,
         let (_, _, result) = run_hard_with_input(&src, b"always\n");
         result.unwrap();
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    // ── verbose ledger ─────────────────────────────────
+
+    #[test]
+    fn verbose_ledger_captures_arming_ops() {
+        use crate::ledger::OpTag;
+        let (records, result) = run_with_verbose_ledger(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+INSERT 1 9
+CONSENT
+FLUSH"#,
+        );
+        result.unwrap();
+        let ops: Vec<OpTag> = records.iter().map(|r| r.op).collect();
+        assert_eq!(
+            ops,
+            vec![OpTag::Prep, OpTag::Insert, OpTag::Consent, OpTag::Flush],
+        );
+    }
+
+    #[test]
+    fn verbose_ledger_records_clench_and_release() {
+        use crate::ledger::OpTag;
+        let (records, result) = run_with_verbose_ledger(
+            r#"CLENCH
+RELAX
+RELEASE"#,
+        );
+        result.unwrap();
+        let ops: Vec<OpTag> = records.iter().map(|r| r.op).collect();
+        assert_eq!(ops, vec![OpTag::Clench, OpTag::Relax, OpTag::Release],);
+    }
+
+    #[test]
+    fn non_verbose_ledger_omits_arming_ops() {
+        // Same program as `verbose_ledger_captures_arming_ops` but on a
+        // default (non-verbose) sink. Only the two destructive ops should
+        // appear; PREP and CONSENT must not.
+        use crate::ledger::OpTag;
+        let (records, result) = run_with_ledger(
+            r#"PUSH 1 PUSH 2 PUSH 3
+PREP
+INSERT 1 9
+CONSENT
+FLUSH"#,
+        );
+        result.unwrap();
+        let ops: Vec<OpTag> = records.iter().map(|r| r.op).collect();
+        assert_eq!(ops, vec![OpTag::Insert, OpTag::Flush]);
     }
 }
